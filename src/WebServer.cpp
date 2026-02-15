@@ -4,7 +4,6 @@
 
 #if WEBSERVER_ENABLED
 
-#include "WebServer.h"
 #include "ReticulumNode.h"
 #include <WiFi.h>
 #include <SPIFFS.h>
@@ -115,7 +114,6 @@ void processHttpClient(WiFiClient &client) {
     int contentLength = 0;
     String authHeader;
     String signatureHex;
-    String fwVersion;
     while (true) {
         String line = readLine(client);
         if (line.length() <= 2) break; // \r\n
@@ -128,9 +126,6 @@ void processHttpClient(WiFiClient &client) {
         } else if (line.startsWith("X-Signature-Ed25519:")) {
             signatureHex = line.substring(20);
             signatureHex.trim();
-        } else if (line.startsWith("X-FW-Version:")) {
-            fwVersion = line.substring(13);
-            fwVersion.trim();
         }
     }
 
@@ -315,7 +310,7 @@ bool WebServerManager::loadConfigFromFS(const char* path) {
 
 bool WebServerManager::saveConfigToFS(const char* path) {
 #if JSON_CONFIG_ENABLED
-    return SPIFFS.exists(path);
+    (void)path; return true; // Config saving is handled in processHttpClient
 #else
     (void)path; return false;
 #endif
