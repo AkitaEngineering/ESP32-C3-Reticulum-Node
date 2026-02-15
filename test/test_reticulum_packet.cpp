@@ -25,11 +25,4 @@ void test_serialize_deserialize_roundtrip() {
     }
 }
 
-void setup() {
-    delay(2000);
-    UNITY_BEGIN();
-    RUN_TEST(test_serialize_deserialize_roundtrip);
-    UNITY_END();
-}
-
-void loop() {}
+// Test functions are invoked from a central test runner.

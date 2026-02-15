@@ -1,0 +1,114 @@
+openapi: 3.0.3
+info:
+  title: ESP32 Reticulum Gateway API
+  version: "1.0.0"
+  description: OpenAPI spec for the small REST API implemented by the ESP32 Reticulum Gateway.
+servers:
+  - url: http://{host}:{port}
+    variables:
+      host:
+        default: "<device-ip>"
+      port:
+        default: "80"
+paths:
+  /api/v1/status:
+    get:
+      summary: Node status
+      responses:
+        '200':
+          description: Node status JSON
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  uptime_ms:
+                    type: integer
+                  free_heap:
+                    type: integer
+                  active_links:
+                    type: integer
+                  route_count:
+                    type: integer
+
+  /api/v1/config:
+    get:
+      summary: Read runtime JSON config
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: JSON configuration
+          content:
+            application/json:
+              schema:
+                type: object
+    post:
+      summary: Write runtime JSON config
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Saved configuration
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/v1/config/save:
+    post:
+      summary: Persist staged runtime config
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: saved
+          content:
+            text/plain:
+              schema:
+                type: string
+        '500':
+          description: no config to save
+
+  /api/v1/ota:
+    post:
+      summary: Signed OTA upload
+      security:
+        - bearerAuth: []
+      parameters:
+        - in: header
+          name: X-Signature-Ed25519
+          schema:
+            type: string
+          required: true
+          description: Hex-encoded Ed25519 signature for the uploaded binary
+      requestBody:
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        '200':
+          description: OK
+          content:
+            text/plain:
+              schema:
+                type: string
+        '400':
+          description: Bad request or incomplete upload
+        '403':
+          description: Invalid signature
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT

@@ -1,0 +1,68 @@
+{
+  "info": {
+    "name": "ESP32 Reticulum Gateway API",
+    "_postman_id": "reticulum-gateway",
+    "description": "Minimal Postman collection for the device REST API (derived from docs/openapi.yaml).",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Get Status",
+      "request": {
+        "method": "GET",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" }
+        ],
+        "url": { "raw": "http://{{host}}:{{port}}/api/v1/status", "host": ["{{host}}"], "port": "{{port}}", "path": ["api","v1","status"] }
+      }
+    },
+    {
+      "name": "Get Config",
+      "request": {
+        "method": "GET",
+        "header": [ { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" } ],
+        "url": { "raw": "http://{{host}}:{{port}}/api/v1/config", "host": ["{{host}}"], "port": "{{port}}", "path": ["api","v1","config"] }
+      }
+    },
+    {
+      "name": "Post Config",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+          { "key": "Content-Type", "value": "application/json", "type": "text" }
+        ],
+        "body": { "mode": "raw", "raw": "{\n  \"node_name\": \"esp32-rns-node\",\n  \"wifi\": { \"ssid\": \"myssid\", \"password\": \"mypw\" }\n}" },
+        "url": { "raw": "http://{{host}}:{{port}}/api/v1/config", "host": ["{{host}}"], "port": "{{port}}", "path": ["api","v1","config"] }
+      }
+    },
+    {
+      "name": "Save Config",
+      "request": {
+        "method": "POST",
+        "header": [ { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" } ],
+        "url": { "raw": "http://{{host}}:{{port}}/api/v1/config/save", "host": ["{{host}}"], "port": "{{port}}", "path": ["api","v1","config","save"] }
+      }
+    },
+    {
+      "name": "OTA Upload (signed)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+          { "key": "X-Signature-Ed25519", "value": "{{signature}}", "type": "text" },
+          { "key": "Content-Type", "value": "application/octet-stream", "type": "text" }
+        ],
+        "body": { "mode": "file", "file": "{{firmware_file}}" },
+        "url": { "raw": "http://{{host}}:{{port}}/api/v1/ota", "host": ["{{host}}"], "port": "{{port}}", "path": ["api","v1","ota"] }
+      }
+    }
+  ],
+  "variable": [
+    { "key": "host", "value": "<device-ip>" },
+    { "key": "port", "value": "80" },
+    { "key": "token", "value": "" },
+    { "key": "signature", "value": "" },
+    { "key": "firmware_file", "value": "firmware.bin" }
+  ]
+}

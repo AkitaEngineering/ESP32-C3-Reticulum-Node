@@ -22,11 +22,4 @@ void test_kiss_encode_escape() {
     TEST_ASSERT_TRUE(hasTFESC);
 }
 
-void setup() {
-    delay(2000);
-    UNITY_BEGIN();
-    RUN_TEST(test_kiss_encode_escape);
-    UNITY_END();
-}
-
-void loop() {}
+// Test functions are invoked from a central test runner.

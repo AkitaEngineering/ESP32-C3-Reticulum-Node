@@ -35,6 +35,11 @@ This specification applies to all ESP32-based hardware platforms including but n
 
 ---
 
+Web API Documentation
+- The firmware exposes a small REST API when the Web UI is enabled. See [docs/API.md](docs/API.md) for a concise reference of endpoints, authentication, and OTA upload usage.
+
+---
+
 ## 2.0 SYSTEM OVERVIEW
 
 ### 2.1 System Description
@@ -454,7 +459,7 @@ Bytes 19+:  Payload data
 
 #### 10.2.4 Memory Issues
 1. Monitor free heap via serial output
-2. Reduce maximum routes/links if needed
+2. Reduce maximum routes/links if neededb
 3. Reduce payload size if needed
 4. Disable unused interfaces
 
