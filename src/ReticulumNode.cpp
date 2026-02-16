@@ -13,9 +13,7 @@ ReticulumNode::ReticulumNode() :
     _packetIdUnsavedCount(0),
     _routingTable(), // Default constructor
     // Initialize InterfaceManager first, pass its callback lambda and routing table ref
-    _interfaceManager([this](const uint8_t* buff, size_t len, InterfaceType iface, const uint8_t* mac, const IPAddress& ip, uint16_t port){
-        this->handleReceivedPacket(buff, len, iface, mac, ip, port);
-    }, _routingTable),
+    _interfaceManager(nullptr, _routingTable),
     // Initialize LinkManager, passing *this ReticulumNode reference
     _linkManager(*this),
     _last_announce_time(0),
@@ -27,7 +25,7 @@ ReticulumNode::ReticulumNode() :
 
 void ReticulumNode::setup() {
     // Load config must happen first
-    loadConfig(); // Loads address, packet ID
+    // loadConfig(); // Loads address, packet ID
     printNodeAddress();
     _subscribedGroups = SUBSCRIBED_GROUPS; // Copy groups from Config.h
 
