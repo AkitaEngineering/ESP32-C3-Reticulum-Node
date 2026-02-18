@@ -36,6 +36,14 @@ public:
     // Called by LinkManager when reliable data arrives for the app
     void processAppData(const uint8_t* source_address, const std::vector<uint8_t>& data);
 
+    // --- Persistence / test helpers ---
+    // Force reload config from EEPROM (useful for tests)
+    void loadConfigFromEEPROM();
+    // Synchronously save node address + packet counter to EEPROM
+    void saveConfigNow();
+    // Return current in-memory packet counter (for tests/inspection)
+    uint16_t getPacketCounter() const;
+
 private:
     // --- Initialization Helpers ---
     void loadConfig();                // Loads address/packet ID from EEPROM

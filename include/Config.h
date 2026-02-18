@@ -11,7 +11,7 @@
 // Use Serial1/Serial2 (UART1/UART2) for KISS interface with Reticulum
 
 #ifndef DEBUG_ENABLED
-#define DEBUG_ENABLED 0  // Set to 1 to enable debug logging
+#define DEBUG_ENABLED 1  // Set to 1 to enable debug logging
 #endif
 
 // Debug serial shim: when DEBUG_ENABLED is 0, debug output is suppressed while
@@ -141,7 +141,7 @@ const uint16_t RNS_UDP_PORT = 4242; // Default Reticulum UDP port
 const uint8_t MAX_HOPS = 15;        // Max hop count for packets
 
 // --- Timing & Intervals (milliseconds) ---
-const uint16_t PACKET_ID_SAVE_INTERVAL = 100; // Save counter every N packets generated
+const uint16_t PACKET_ID_SAVE_INTERVAL = 5000; // Save counter every N packets generated (increased to reduce EEPROM wear)
 const unsigned long ANNOUNCE_INTERVAL_MS = 180000; // Announce every 3 minutes
 const unsigned long ROUTE_TIMEOUT_MS = ANNOUNCE_INTERVAL_MS * 3 + 15000; // Timeout after ~3 missed announces
 const unsigned long PRUNE_INTERVAL_MS = ANNOUNCE_INTERVAL_MS / 2; // Check for old routes periodically

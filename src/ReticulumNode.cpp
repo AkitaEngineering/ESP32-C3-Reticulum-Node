@@ -25,7 +25,7 @@ ReticulumNode::ReticulumNode() :
 
 void ReticulumNode::setup() {
     // Load config must happen first
-    // loadConfig(); // Loads address, packet ID
+    loadConfig(); // Loads address, packet ID
     printNodeAddress();
     _subscribedGroups = SUBSCRIBED_GROUPS; // Copy groups from Config.h
 
@@ -113,7 +113,7 @@ void ReticulumNode::generateNodeAddress() {
 void ReticulumNode::saveNodeAddress() {
     DebugSerial.print("Saving node address to EEPROM: "); printNodeAddress(); // Print before saving
      // EEPROM.begin required before write if not already called or ended
-     // if (!EEPROM.begin(EEPROM_SIZE)) { DebugSerial.println("! EEPROM begin failed for save!"); return; }
+     if (!EEPROM.begin(EEPROM_SIZE)) { DebugSerial.println("! EEPROM begin failed for save!"); return; }
     for (int i = 0; i < RNS_ADDRESS_SIZE; ++i) {
         EEPROM.write(EEPROM_ADDR_NODE + i, _nodeAddress[i]);
     }
@@ -126,16 +126,57 @@ void ReticulumNode::saveNodeAddress() {
 void ReticulumNode::loadPacketCounter() {
     // Manual read for compatibility:
     _packetCounter = (EEPROM.read(EEPROM_ADDR_PKTID + 0) << 8) | EEPROM.read(EEPROM_ADDR_PKTID + 1);
-    DebugSerial.print("Loaded packet counter start: "); DebugSerial.println(_packetCounter);
+
+    // Validate loaded value: treat 0xFFFF, 0x0000 or very small values as uninitialized/corrupt
+    if (_packetCounter == 0xFFFF || _packetCounter == 0x0000 || _packetCounter < 10) {
+        uint16_t old = _packetCounter;
+        _packetCounter = (uint16_t)(esp_random() & 0xFFFF);
+        DebugSerial.print("Invalid/empty packet counter in EEPROM (read="); DebugSerial.print(old);
+        DebugSerial.print(") — using random start: "); DebugSerial.println(_packetCounter);
+    } else {
+        DebugSerial.print("Loaded packet counter start: "); DebugSerial.println(_packetCounter);
+    }
+
     _packetIdUnsavedCount = 0; // Reset unsaved counter
 }
+
+// Public helper: force-load config from EEPROM (useful in tests)
+void ReticulumNode::loadConfigFromEEPROM() {
+    loadConfig();
+}
+
+// Public helper: return current in-memory packet counter
+uint16_t ReticulumNode::getPacketCounter() const {
+    return _packetCounter;
+}
+
+// Public helper: save node address and packet counter synchronously to EEPROM
+void ReticulumNode::saveConfigNow() {
+    if (!EEPROM.begin(EEPROM_SIZE)) { DebugSerial.println("! EEPROM begin failed for saveConfigNow()"); return; }
+
+    // Save node address
+    for (int i = 0; i < RNS_ADDRESS_SIZE; ++i) {
+        EEPROM.write(EEPROM_ADDR_NODE + i, _nodeAddress[i]);
+    }
+
+    // Save packet counter
+    EEPROM.write(EEPROM_ADDR_PKTID + 0, (_packetCounter >> 8) & 0xFF);
+    EEPROM.write(EEPROM_ADDR_PKTID + 1, _packetCounter & 0xFF);
+
+    if (!EEPROM.commit()) {
+        DebugSerial.println("! WARNING: EEPROM commit failed in saveConfigNow()");
+    }
+
+    _packetIdUnsavedCount = 0; // Reset throttle counter
+}
+
 
 void ReticulumNode::savePacketCounterIfNeeded() {
     _packetIdUnsavedCount++;
     if (_packetIdUnsavedCount >= PACKET_ID_SAVE_INTERVAL) {
          // DebugSerial.print("Saving packet counter: "); DebugSerial.println(_packetCounter); // Verbose
          // EEPROM.begin required before write if not already called or ended
-         // if (!EEPROM.begin(EEPROM_SIZE)) { DebugSerial.println("! EEPROM begin failed for save!"); return; }
+         if (!EEPROM.begin(EEPROM_SIZE)) { DebugSerial.println("! EEPROM begin failed for save!"); return; }
          EEPROM.write(EEPROM_ADDR_PKTID + 0, (_packetCounter >> 8) & 0xFF);
          EEPROM.write(EEPROM_ADDR_PKTID + 1, _packetCounter & 0xFF);
          if (!EEPROM.commit()) {
@@ -155,7 +196,7 @@ uint16_t ReticulumNode::getNextPacketId() {
 
 void ReticulumNode::printNodeAddress() {
     DebugSerial.print("Node Address: ");
-    Utils::printBytes(_nodeAddress, RNS_ADDRESS_SIZE, Serial);
+    Utils::printBytes(_nodeAddress, RNS_ADDRESS_SIZE, DebugSerial);
     DebugSerial.println();
 }
 

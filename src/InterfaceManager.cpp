@@ -68,18 +68,27 @@ InterfaceManager::InterfaceManager(PacketReceiverCallback receiver, RoutingTable
 
 void InterfaceManager::setup() {
     setupSerial(); // Assumes Serial.begin() already called
-    
+
+#ifdef DISABLE_WIFI
+    DebugSerial.println("IF: Full Interface initialization STUBBED (DISABLE_WIFI)");
+    return; // Short-circuit everything for isolation/testing
+#endif
+
     // Initialize Bluetooth first (if available)
 #if BLUETOOTH_CLASSIC_AVAILABLE
     setupBluetooth();
 #endif
     
     // Configure WiFi power save mode BEFORE initializing WiFi
+#ifndef DISABLE_WIFI
     esp_wifi_set_ps(WIFI_PS_MIN_MODEM);  // Use minimum power save mode when both BT and WiFi are active
     
     // Now setup WiFi and ESP-NOW
     setupWiFi();   // Sets mode, connects, starts UDP
     setupESPNow(); // Depends on WiFi mode being set
+#else
+    DebugSerial.println("IF: WiFi initialization disabled (DISABLE_WIFI)");
+#endif
     
 #ifdef LORA_ENABLED
     setupLoRa();
@@ -160,6 +169,10 @@ void InterfaceManager::setupWiFi() {
 }
 
 void InterfaceManager::setupESPNow() {
+#ifdef DISABLE_WIFI
+    DebugSerial.println("IF: setupESPNow() skipped (DISABLE_WIFI)");
+    return;
+#endif
      DebugSerial.print("IF: Device MAC: "); DebugSerial.println(WiFi.macAddress());
     if (esp_now_init() != ESP_OK) {
         DebugSerial.println("! ERROR: Initializing ESP-NOW failed!");
@@ -191,6 +204,7 @@ void InterfaceManager::setupBluetooth() {
 #endif
 
 // --- Input Processing ---
+#ifndef DISABLE_WIFI
 void InterfaceManager::processWiFiInput() {
     int packetSize = _udp.parsePacket();
     if (packetSize > 0) {
@@ -214,6 +228,11 @@ void InterfaceManager::processWiFiInput() {
         }
     }
 }
+#else
+void InterfaceManager::processWiFiInput() {
+    /* WiFi disabled at build-time — no-op */
+}
+#endif
 
 void InterfaceManager::processSerialInput() {
      while (KissSerial.available()) {
@@ -751,8 +770,17 @@ void InterfaceManager::sendAPRSPosition(float lat, float lon, float altitude, co
     float latMin = (abs(lat) - latDeg) * 60.0f;
     float lonMin = (abs(lon) - lonDeg) * 60.0f;
 
-    snprintf(latStr, sizeof(latStr), "%02d%05.2f", latDeg, latMin);
-    snprintf(lonStr, sizeof(lonStr), "%03d%05.2f", lonDeg, lonMin);
+    /* Format minutes without using float-format specifiers (avoid linking float printf)
+       APRS wants DDMM.MM (lat) and DDDMM.MM (lon) where MM.MM has two decimals. */
+    int latMin100 = (int)(latMin * 100.0f + 0.5f);
+    int latMinWhole = latMin100 / 100;
+    int latMinFrac = latMin100 % 100;
+    snprintf(latStr, sizeof(latStr), "%02d%02d.%02d", latDeg, latMinWhole, latMinFrac);
+
+    int lonMin100 = (int)(lonMin * 100.0f + 0.5f);
+    int lonMinWhole = lonMin100 / 100;
+    int lonMinFrac = lonMin100 % 100;
+    snprintf(lonStr, sizeof(lonStr), "%03d%02d.%02d", lonDeg, lonMinWhole, lonMinFrac);
 
     String info = "!";               // Position report
     info += String(latStr);

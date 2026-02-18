@@ -13,6 +13,14 @@
 
 extern ReticulumNode reticulumNode;
 
+// Sanity checks: if WebServer is enabled, ensure JSON config / OTA flags are intentionally set
+#if WEBSERVER_ENABLED && !JSON_CONFIG_ENABLED
+#warning "WEBSERVER_ENABLED=1 but JSON_CONFIG_ENABLED=0 — runtime JSON config will be disabled"
+#endif
+#if WEBSERVER_ENABLED && !OTA_ENABLED
+#warning "WEBSERVER_ENABLED=1 but OTA_ENABLED=0 — OTA endpoints will be disabled"
+#endif
+
 static WiFiServer _server(WEBSERVER_PORT);
 static const char* CONFIG_PATH = "/config.json";
 
@@ -296,6 +304,8 @@ void processHttpClient(WiFiClient &client) {
         fin.close(); free(buf);
         if (!Update.end(true)) { SPIFFS.remove(tmpPath); sendResponse(client, 500, "text/plain", "OTA finalize failed"); return; }
         SPIFFS.remove(tmpPath);
+        // Persist config before reboot to avoid losing packet counter/address
+        reticulumNode.saveConfigNow();
         sendResponse(client, 200, "text/plain", "ok");
         delay(250);
         ESP.restart();
@@ -305,6 +315,8 @@ void processHttpClient(WiFiClient &client) {
 
     } else if (method == "POST" && path == "/api/v1/restart") {
         if (!checkAuth(authHeader)) { sendUnauthorized(client); return; }
+        // Persist state before performing a restart
+        reticulumNode.saveConfigNow();
         sendResponse(client, 200, "text/plain", "restarting");
         delay(250); ESP.restart();
 
