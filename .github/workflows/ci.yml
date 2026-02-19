@@ -36,6 +36,9 @@ jobs:
       - name: Build ESP32-C3 Web-enabled environment
         run: pio run -e esp32-c3-web
 
+      - name: Build ESP32-C3 minimal environment
+        run: pio run -e esp32-c3-minimal
+
       - name: Build ESP32 (original) environment
         run: pio run -e esp32dev
 
