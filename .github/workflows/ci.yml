@@ -39,6 +39,22 @@ jobs:
       - name: Build ESP32-C3 minimal environment
         run: pio run -e esp32-c3-minimal
 
+      - name: Build test-serial (compile-only)
+        run: pio run -e test-serial
+
+      - name: Verify _svfprintf_r symbol in C3 minimal ELF
+        run: |
+          set -e
+          pio run -e esp32-c3-minimal
+          # prefer toolchain nm; fallback to strings if nm not available
+          if command -v riscv32-esp-elf-nm >/dev/null 2>&1; then
+            riscv32-esp-elf-nm .pio/build/esp32-c3-minimal/firmware.elf | grep -q _svfprintf_r
+          elif [ -f "$HOME/.platformio/packages/toolchain-riscv32-esp/bin/riscv32-esp-elf-nm" ]; then
+            "$HOME/.platformio/packages/toolchain-riscv32-esp/bin/riscv32-esp-elf-nm" .pio/build/esp32-c3-minimal/firmware.elf | grep -q _svfprintf_r
+          else
+            strings .pio/build/esp32-c3-minimal/firmware.elf | grep -q _svfprintf_r
+          fi
+
       - name: Build ESP32 (original) environment
         run: pio run -e esp32dev
 

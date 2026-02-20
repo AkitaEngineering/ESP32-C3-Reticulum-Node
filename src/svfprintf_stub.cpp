@@ -1,17 +1,19 @@
 // Short-term workaround: provide a no-op _svfprintf_r to avoid hitting
-// newlib's floating-point paths (which have caused Illegal instruction
-// panics on some ESP32-C3 toolchain/newlib combinations).
+// newlib's formatted-IO paths that can invoke floating-point helpers on
+// some RISC‑V (ESP32‑C3) toolchain/newlib combinations — which caused
+// Illegal instruction panics during early startup on affected boards.
 //
-// This prevents formatted stdio from executing complex FP helpers at
-// startup. It's intentionally minimal — it discards output and returns 0.
-// Remove this once the underlying toolchain/newlib issue is fixed.
+// Guard this symbol so it only applies to RISC‑V / ESP32‑C3 builds.
+// TODO: remove this stub when upstream toolchain/newlib is fixed (see issue).
 
 #include <stdarg.h>
 
+#if defined(ARDUINO_ARCH_ESP32C3) || defined(__riscv)
 extern "C" int _svfprintf_r(void *reent, void *stream, const char *fmt, va_list ap)
 {
     (void)reent; (void)stream; (void)fmt; (void)ap;
-    // Pretend nothing was written — avoids invoking newlib FP code paths.
+    // No-op: avoid invoking newlib floating-point formatted IO helpers.
     return 0;
 }
+#endif
 
