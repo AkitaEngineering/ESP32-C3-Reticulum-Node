@@ -1,8 +1,8 @@
 # ESP32 Reticulum Network Stack Gateway Node
 ## Documentation Index
-**Document Version:** 2.0  
+**Document Version:** 2.1  
 **Classification:** Unclassified  
-**Date:** 2025-12-31  
+**Date:** 2026-02-20  
 **System Designation:** ESP32-RNS-GW-DOC
 
 ---
@@ -139,8 +139,8 @@ Feature Documentation
 - **Minor Version**: Minor updates, corrections, additions
 
 ### 5.2 Document Status
-- **Current Version**: 2.0
-- **Last Updated**: 2025-12-31
+- **Current Version**: 2.1
+- **Last Updated**: 2026-02-20
 - **Status**: Active
 
 ### 5.3 Revision Tracking

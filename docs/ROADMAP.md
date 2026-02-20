@@ -1,6 +1,6 @@
 # Project Roadmap — ESP32 Reticulum Gateway
 
-Status (2026-02-14): initial roadmap and tracked feature checklist. Work will be implemented incrementally in small PRs; CI and unit tests will guard commits.
+Status (2026-02-20): roadmap updated; v2.1 features largely implemented.
 
 ## Goals
 - Make the node easier to operate remotely (Web UI, runtime config, metrics)
@@ -9,10 +9,10 @@ Status (2026-02-14): initial roadmap and tracked feature checklist. Work will be
 
 ## Milestones
 - v2.1 — Observability & DX
-  - [ ] CI + unit tests
-  - [ ] Web UI + REST API (status, logs)
-  - [ ] Runtime JSON config (SPIFFS/LittleFS)
-  - [ ] /metrics endpoint + log levels
+  - [x] CI + unit tests
+  - [x] Web UI + REST API (status, logs)
+  - [x] Runtime JSON config (SPIFFS/LittleFS)
+  - [x] /metrics endpoint + log levels
 - v2.2 — Field features
   - [ ] Secure OTA with signature verification
   - [ ] BLE provisioning (GATT) for WiFi/callsign
@@ -23,10 +23,9 @@ Status (2026-02-14): initial roadmap and tracked feature checklist. Work will be
   - [ ] Crash reporting & remote core dumps (opt-in)
 
 ## Immediate next tasks (this repo change set)
-- Create issues for each roadmap item (one-per-feature)
-- Add CI workflow + unit-test stubs
-- Add documentation (API, roadmap, contributing, security)
-- Add lightweight WebServer skeleton + runtime-config example
+- Track remaining roadmap features in issues
+- Continue implementing features from top of checklist
+- Extend unit tests and CI coverage
 
 ## How we'll work
 - Features implemented via separate PRs (recommended)

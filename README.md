@@ -1,9 +1,11 @@
 # ESP32 Reticulum Network Stack Gateway Node
 ## Technical Specification Document
-**Document Version:** 2.0  
+**Document Version:** 2.1  
 **Classification:** Unclassified  
-**Date:** 2025-12-31  
+**Date:** 2026-02-20  
 **System Designation:** ESP32-RNS-GW
+
+**Revision:** v2.1 adds Web UI, runtime JSON config, /metrics endpoint, signed OTA support, BLE provisioning macros and updated documentation.
 
 ---
 
@@ -290,6 +292,19 @@ pio run -e <environment_name>
 - **Subscribed Groups**: Add group addresses in `SUBSCRIBED_GROUPS`
 - **Routing Parameters**: Adjust timeouts if needed
 - **Link Parameters**: Adjust retry/timeout values if needed
+
+#### 6.3.3 Web UI / API Configuration
+- **API Token**: Set `api.token` in runtime JSON config or interact via `/api/v1/config`.
+- **OTA Public Key**: When `OTA_ENABLED` is enabled, provide `api.public_key` in config (hex‑encoded Ed25519).
+- **Access**: Use browser or curl against `http://<device>/api/v1/...` after Web UI is enabled.
+
+#### 6.3.4 BLE Provisioning
+- **Enable**: build with `-DBLE_PROVISIONING_ENABLED=1`.
+- **Procedure**: Connect over BLE GATT and write WiFi credentials or callsign using the provisioning service (implementation stubbed).
+
+#### 6.3.5 Metrics Endpoint
+- **Enable**: build with `-DMETRICS_ENABLED=1`.
+- **Access**: GET `/api/v1/metrics` returns JSON with uptime, heap, active links, route count and allows adjusting log levels.
 
 ---
 

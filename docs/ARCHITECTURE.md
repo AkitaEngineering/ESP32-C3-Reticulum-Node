@@ -1,8 +1,8 @@
 # ESP32 Reticulum Gateway System Architecture
 ## Technical Architecture Document
-**Document Version:** 2.0  
+**Document Version:** 2.1  
 **Classification:** Unclassified  
-**Date:** 2025-12-31  
+**Date:** 2026-02-20  
 **System Designation:** ESP32-RNS-GW-ARCH
 
 ---

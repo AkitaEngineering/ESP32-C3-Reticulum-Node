@@ -1,8 +1,8 @@
 # ESP32 Reticulum Network Stack Gateway Node
 ## Revision History and Change Log
-**Document Version:** 2.0  
+**Document Version:** 2.1  
 **Classification:** Unclassified  
-**Date:** 2025-12-31  
+**Date:** 2026-02-20  
 **System Designation:** ESP32-RNS-GW-REV
 
 ---
@@ -16,6 +16,14 @@ This document provides a complete revision history and change log for the ESP32 
 Revisions are listed in reverse chronological order (most recent first). Each revision entry includes version number, date, description, and affected components.
 
 ---
+
+## 2.1 REVISION HISTORY
+
+### 2.1 Documentation Update (2026-02-20)
+- Bumped document versions and dates across repository
+- Added notes about Web UI, metrics endpoint, OTA support, BLE provisioning
+- Marked v2.1 milestone items complete in roadmap
+- Editorial corrections and accuracy updates
 
 ## 2.0 REVISION HISTORY
 
