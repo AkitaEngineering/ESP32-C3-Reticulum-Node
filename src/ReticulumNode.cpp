@@ -12,8 +12,14 @@ ReticulumNode::ReticulumNode() :
     _packetCounter(0),
     _packetIdUnsavedCount(0),
     _routingTable(), // Default constructor
-    // Initialize InterfaceManager first, pass its callback lambda and routing table ref
-    _interfaceManager(nullptr, _routingTable),
+    // Initialize InterfaceManager with a packet receiver callback bound to this
+    _interfaceManager(
+        [this](const uint8_t *packetBuffer, size_t packetLen, InterfaceType interface,
+               const uint8_t* sender_mac, const IPAddress& sender_ip, uint16_t sender_port)
+        {
+            this->handleReceivedPacket(packetBuffer, packetLen, interface, sender_mac, sender_ip, sender_port);
+        },
+        _routingTable),
     // Initialize LinkManager, passing *this ReticulumNode reference
     _linkManager(*this),
     _last_announce_time(0),
@@ -205,10 +211,12 @@ void ReticulumNode::checkMemoryUsage() {
     unsigned long now = millis();
     if (now - _last_mem_check_time > MEM_CHECK_INTERVAL_MS) {
         DebugSerial.print("[Mem] Free Heap: "); DebugSerial.print(ESP.getFreeHeap());
-        // Add more stats if needed (e.g., Link count, Route count)
-        // DebugSerial.print(" Links: "); DebugSerial.print(_linkManager.getActiveLinkCount()); // Need method in LinkManager
-        // DebugSerial.print(" Routes: "); DebugSerial.print(_routingTable.getRouteCount()); // Need method in RoutingTable
+        // Additional diagnostics
+        DebugSerial.print(" Routes: "); DebugSerial.print(_routingTable.getRouteCount());
         DebugSerial.println();
+        // Print esp-now peers for debugging
+        _interfaceManager.printEspNowPeers();
+
         _last_mem_check_time = now;
     }
 }
@@ -324,7 +332,7 @@ void ReticulumNode::handleReceivedPacket(const uint8_t *packetBuffer, size_t pac
 // Handles non-link packets addressed to this node (or group), including LOCAL_CMD
 void ReticulumNode::processPacketForSelf(const RnsPacketInfo& packetInfo, InterfaceType interface) {
 
-    // Check for Local Command Context from Serial/BT to INITIATE reliable send
+    // Check for Local Command Context from Serial/BT to INITIATE reliable send or debug
     if (packetInfo.context == RNS_CONTEXT_LOCAL_CMD &&
        (interface == InterfaceType::SERIAL_PORT || interface == InterfaceType::BLUETOOTH))
     {
@@ -338,13 +346,32 @@ void ReticulumNode::processPacketForSelf(const RnsPacketInfo& packetInfo, Interf
                  actualPayload.assign(packetInfo.payload.begin() + RNS_ADDRESS_SIZE, packetInfo.payload.end());
             } // else: payload is empty, might be a ping command?
 
-            DebugSerial.print("> CMD: Send Reliable to "); Utils::printBytes(targetDest, RNS_ADDRESS_SIZE, Serial);
-            DebugSerial.print(" DataLen="); DebugSerial.println(actualPayload.size());
+            // Look for text commands (e.g. "routes" or "peers") when dest is our own address or all zeros
+            bool handled = false;
+            if (Utils::compareAddresses(targetDest, _nodeAddress) || Utils::isAllZeros(targetDest, RNS_ADDRESS_SIZE)) {
+                std::string cmd;
+                cmd.reserve(actualPayload.size());
+                for (auto b : actualPayload) {
+                    if (isprint(b)) cmd.push_back((char)b);
+                }
+                if (cmd == "routes") {
+                    _routingTable.print();
+                    handled = true;
+                } else if (cmd == "peers") {
+                    _interfaceManager.printEspNowPeers();
+                    handled = true;
+                }
+            }
 
-            // Initiate reliable send via LinkManager
-            if (!_linkManager.sendReliableData(targetDest, actualPayload)) {
-                 DebugSerial.println("! CMD Failed: Could not initiate reliable send.");
-                 // Optionally send failure notification back via KISS? Complex.
+            if (!handled) {
+                DebugSerial.print("> CMD: Send Reliable to "); Utils::printBytes(targetDest, RNS_ADDRESS_SIZE, Serial);
+                DebugSerial.print(" DataLen="); DebugSerial.println(actualPayload.size());
+
+                // Initiate reliable send via LinkManager
+                if (!_linkManager.sendReliableData(targetDest, actualPayload)) {
+                     DebugSerial.println("! CMD Failed: Could not initiate reliable send.");
+                     // Optionally send failure notification back via KISS? Complex.
+                }
             }
 
         } else {

@@ -174,6 +174,23 @@ void InterfaceManager::setupESPNow() {
     return;
 #endif
      DebugSerial.print("IF: Device MAC: "); DebugSerial.println(WiFi.macAddress());
+
+    // Optional channel override
+    if (ESP_NOW_CHANNEL != 0) {
+        esp_err_t ch_err = esp_wifi_set_channel(ESP_NOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
+        if (ch_err == ESP_OK) {
+            DebugSerial.print("IF: Forced WiFi channel to "); DebugSerial.println(ESP_NOW_CHANNEL);
+        } else {
+            DebugSerial.print("! WARN: Failed to set WiFi channel: "); DebugSerial.println(esp_err_to_name(ch_err));
+        }
+    }
+
+    // Query current channel for debugging
+    uint8_t curr_ch;
+    wifi_second_chan_t second_ch;
+    esp_wifi_get_channel(&curr_ch, &second_ch);
+    DebugSerial.print("IF: Current WiFi channel: "); DebugSerial.println(curr_ch);
+
     if (esp_now_init() != ESP_OK) {
         DebugSerial.println("! ERROR: Initializing ESP-NOW failed!");
         return; // Cannot proceed with ESP-NOW
@@ -416,19 +433,43 @@ void InterfaceManager::sendPacketViaBluetooth(const uint8_t *packetBuffer, size_
 // --- ESP-NOW Peer Management ---
 bool InterfaceManager::addEspNowPeer(const uint8_t* mac_addr) {
     if (!mac_addr) return false;
-    if (checkEspNowPeer(mac_addr)) return true; // Already exists
+    if (checkEspNowPeer(mac_addr)) {
+        // ensure our list also contains it
+        std::array<uint8_t,6> arr;
+        memcpy(arr.data(), mac_addr, 6);
+        if (std::find(_espNowPeers.begin(), _espNowPeers.end(), arr) == _espNowPeers.end()) {
+            _espNowPeers.push_back(arr);
+        }
+        return true; // Already exists at driver level
+    }
 
     esp_now_peer_info_t peerInfo = {}; // Initialize all fields to 0/false/etc.
     memcpy(peerInfo.peer_addr, mac_addr, 6);
     // peerInfo.channel = 0; // Use current channel by default
     peerInfo.encrypt = false; // Encryption disabled (requires shared keys)
-    // peerInfo.ifidx = WIFI_IF_STA; // Use station interface? Or AP? Test which works best. WIFI_IF_AP might also be needed.
+    // Try adding peer. On some IDF/Arduino builds the driver requires the ifidx
+    // (station vs softAP) to be set. Try without ifidx first, then retry with
+    // WIFI_IF_STA if the first attempt fails.
     esp_err_t add_result = esp_now_add_peer(&peerInfo);
     if (add_result != ESP_OK) {
-         DebugSerial.print("! ERROR: Failed to add ESP-NOW peer "); Utils::printBytes(mac_addr, 6, DebugSerial); DebugSerial.print(": "); DebugSerial.println(esp_err_to_name(add_result));
-         return false;
+         DebugSerial.print("! WARN: esp_now_add_peer() initial attempt failed for "); Utils::printBytes(mac_addr, 6, DebugSerial); DebugSerial.print(": "); DebugSerial.println(esp_err_to_name(add_result));
+         // Retry with explicit interface index
+         peerInfo.ifidx = WIFI_IF_STA;
+         add_result = esp_now_add_peer(&peerInfo);
+         if (add_result != ESP_OK) {
+             DebugSerial.print("! ERROR: Failed to add ESP-NOW peer after retry "); Utils::printBytes(mac_addr, 6, DebugSerial); DebugSerial.print(": "); DebugSerial.println(esp_err_to_name(add_result));
+             return false;
+         } else {
+             DebugSerial.println("IF: esp_now_add_peer succeeded on retry with WIFI_IF_STA");
+         }
     }
     DebugSerial.print("IF: Added ESP-NOW peer: "); Utils::printBytes(mac_addr, 6, DebugSerial); DebugSerial.println();
+    // record in our local list
+    {
+        std::array<uint8_t,6> arr;
+        memcpy(arr.data(), mac_addr, 6);
+        _espNowPeers.push_back(arr);
+    }
     return true;
 }
 
@@ -442,6 +483,11 @@ bool InterfaceManager::removeEspNowPeer(const uint8_t* mac_addr) {
          return false;
      }
      DebugSerial.print("IF: Removed ESP-NOW peer: "); Utils::printBytes(mac_addr, 6, DebugSerial); DebugSerial.println();
+     // remove from our vector as well
+     std::array<uint8_t,6> arr;
+     memcpy(arr.data(), mac_addr, 6);
+     auto it = std::find(_espNowPeers.begin(), _espNowPeers.end(), arr);
+     if (it != _espNowPeers.end()) _espNowPeers.erase(it);
      return true;
 }
 
@@ -454,6 +500,18 @@ bool InterfaceManager::checkEspNowPeer(const uint8_t* mac_addr) {
     // return esp_now_is_peer_exist(mac_addr); // Older IDF versions
 }
 
+
+// --- Debug Helpers ---
+void InterfaceManager::printEspNowPeers() {
+    DebugSerial.println("IF: ESP-NOW peer list:");
+    if (_espNowPeers.empty()) {
+        DebugSerial.println("  (none)");
+        return;
+    }
+    for (const auto &addr : _espNowPeers) {
+        DebugSerial.print("  "); Utils::printBytes(addr.data(), 6, DebugSerial); DebugSerial.println();
+    }
+}
 
 // --- Static Callbacks ---
 void InterfaceManager::staticEspNowRecvCallback(const uint8_t *mac_addr, const uint8_t *incomingData, int len) {

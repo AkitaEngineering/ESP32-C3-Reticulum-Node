@@ -129,9 +129,9 @@ The system implements a layered architecture:
 
 #### 3.2.2 Functional Responsibilities
 1. **Interface Initialization**
-   - WiFi station mode configuration
+   - WiFi station mode configuration (AP/STA hybrid)
    - UDP socket initialization
-   - ESP-NOW initialization
+   - ESP-NOW initialization (optionally forcing a channel via `ESP_NOW_CHANNEL`)
    - Bluetooth Serial initialization
    - Serial UART initialization
    - LoRa module initialization (if enabled)
@@ -151,7 +151,7 @@ The system implements a layered architecture:
    - Interface-specific transmission
 
 4. **Interface Management**
-   - ESP-NOW peer management
+   - ESP-NOW peer management (automatic registration when routes are learned, removal on timeout)
    - Connection state monitoring
    - Error handling and recovery
 
@@ -175,7 +175,7 @@ The system implements a layered architecture:
 
 #### 3.2.4 Interface State
 - **WiFi State**: Connection status, IP address
-- **ESP-NOW Peers**: List of registered peers
+- **ESP-NOW Peers**: List of registered peers (dynamic, leveled by routing updates)
 - **Bluetooth State**: Connection status
 - **LoRa State**: Initialization status, module handle
 - **HAM Modem State**: Initialization status, TNC connection

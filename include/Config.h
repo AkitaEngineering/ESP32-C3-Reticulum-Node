@@ -158,6 +158,18 @@ extern DebugSerialShim DebugSerial; // Use USB/UART0 for debug (Arduino Serial M
 #define METRICS_ENABLED 0
 #endif
 
+// ESP-NOW channel (0 = inherit current WiFi channel)
+#ifndef ESP_NOW_CHANNEL
+#define ESP_NOW_CHANNEL 0
+#endif
+
+// When set to a non-zero channel number, the firmware will force the WiFi
+// radio to that channel before initializing ESP-NOW. This can be useful when
+// running in AP-only or STA-only mode without joining an access point, or when
+// you want to ensure all nodes operate on a known channel regardless of the
+// AP's current channel.
+// Usage: add -DESP_NOW_CHANNEL=6 to build_flags or modify Config.h.
+
 // --- WiFi Credentials ---
 extern const char *WIFI_SSID; // <<< CHANGE ME in Config.cpp
 extern const char *WIFI_PASSWORD; // <<< CHANGE ME in Config.cpp

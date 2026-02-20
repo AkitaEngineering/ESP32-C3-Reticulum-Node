@@ -11,6 +11,8 @@ namespace Utils {
     void printBytes(const uint8_t* buffer, size_t len, Stream& output);
     // Compares two RNS addresses
     bool compareAddresses(const uint8_t* addr1, const uint8_t* addr2, size_t len = RNS_ADDRESS_SIZE);
+    // Returns true if all bytes in the buffer are zero
+    bool isAllZeros(const uint8_t* buf, size_t len);
 }
 
 #endif // UTILS_H

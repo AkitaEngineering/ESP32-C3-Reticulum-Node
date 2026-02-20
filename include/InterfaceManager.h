@@ -78,9 +78,13 @@ public:
 #endif
 
     // ESP-NOW Peer Management (can be called by RoutingTable during prune)
+    // internally we keep a mirror list of peers for diagnostics
     bool addEspNowPeer(const uint8_t* mac_addr);
     bool removeEspNowPeer(const uint8_t* mac_addr);
     bool checkEspNowPeer(const uint8_t* mac_addr);
+
+    // Debug helpers
+    void printEspNowPeers();
 
     // Static callbacks needed for C-style APIs like ESP-NOW
     static void staticEspNowRecvCallback(const uint8_t *mac_addr, const uint8_t *incomingData, int len);
@@ -128,6 +132,10 @@ private:
 
     PacketReceiverCallback _packetReceiver; // Callback to ReticulumNode::handleReceivedPacket
     RoutingTable& _routingTableRef; // Reference for route lookups / peer management
+
+    // Keep a mirror of ESP-NOW peers added so we can display/remove them
+    std::vector<std::array<uint8_t,6>> _espNowPeers;
+
     WiFiUDP _udp;
 #if BLUETOOTH_CLASSIC_AVAILABLE
     BluetoothSerial _serialBT; // Bluetooth Serial object

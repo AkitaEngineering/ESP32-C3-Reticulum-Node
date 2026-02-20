@@ -86,7 +86,7 @@ Value  Name              Usage
 0xA2   RNS_CONTEXT_LINK_CLOSE  Link termination request
 0xA3   RNS_CONTEXT_LINK_DATA   Link layer data packet
 0xA4   RNS_CONTEXT_ACK         Acknowledgment packet
-0xFE   RNS_CONTEXT_LOCAL_CMD   Local command (non-standard)
+0xFE   RNS_CONTEXT_LOCAL_CMD   Local command (non-standard) – used over KISS/serial for node-local control. Payload begins with an 8‑byte destination (use your own address or all zeros) followed by ASCII command string (e.g. "routes", "peers").
 ```
 
 #### 2.3.2 Context Usage Rules

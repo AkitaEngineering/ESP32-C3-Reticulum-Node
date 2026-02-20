@@ -24,6 +24,11 @@ This specification applies to all ESP32-based hardware platforms including but n
 - ESP32 (original) series microcontrollers
 - Heltec LoRa32 v3/v4 development boards
 
+> **ESP-NOW note:** On platforms with WiFi/ESP-NOW support (all above), ensure nodes are configured
+> to use the same WiFi channel. The firmware currently connects to a WiFi network at boot; nodes
+> must either join the same AP or be forced to the same channel manually (see `esp_wifi_set_channel`).
+> Peers are added automatically when announce packets are received, and removed when routes expire.
+
 ### 1.3 Document Structure
 - Section 2.0: System Overview and Architecture
 - Section 3.0: Technical Specifications
@@ -130,6 +135,8 @@ The system supports the following interface types:
 
 #### 3.4.2 ESP-NOW Interface
 - **Protocol**: Espressif ESP-NOW proprietary protocol
+- **Peer Management**: Broadcast peer added on startup. Unicast peers are automatically registered when
+  they appear in announce messages and removed once routes time out. See section 6.3.6 for troubleshooting.
 - **Maximum Peers**: 20 (ESP32 hardware limitation)
 - **Frame Size**: 250 bytes maximum
 - **Encryption**: Optional (configurable)
@@ -306,6 +313,20 @@ pio run -e <environment_name>
 - **Enable**: build with `-DMETRICS_ENABLED=1`.
 - **Access**: GET `/api/v1/metrics` returns JSON with uptime, heap, active links, route count and allows adjusting log levels.
 
+### 6.3.6 ESP-NOW Troubleshooting & Configuration
+- **Channel matters**: ESP-NOW devices must share a WiFi channel. The firmware inherits the channel
+  of the AP it connects to. For ad‑hoc operation you can call `esp_wifi_set_channel(<chan>, WIFI_SECOND_CHAN_NONE)`
+  before `esp_now_init()` (modify `setupESPNow()` if needed).
+- **Peer log**: Incoming ESP-NOW packets are logged with sender MAC; route additions automatically
+  add the peer. Check serial output for lines starting `IF: Added ESP-NOW peer`.
+- **Failures**: If `esp_now_send()` returns an error, the MAC may not be a registered peer or the
+  channel mismatched. The node will attempt to add the peer and fall back to broadcast.
+- **Reset peer list**: Use `esp_now_deinit()`/`esp_now_init()` sequence to clear all peers if the
+  peer table becomes stale (e.g. after a network topology change).
+- **Testing**: Build two nodes with identical WiFi credentials, power them up, and monitor serial
+  logs. They should exchange announce packets every 180 s and show routes with Interface=3 (ESP_NOW).
+  Use `RoutingTable.print()` via the serial console to inspect learned entries.
+
 ---
 
 ### 6.4 Production defaults and notes
@@ -318,6 +339,7 @@ pio run -e <environment_name>
    - List available envs: `pio run --list-targets`
 - **Tooling:** Keep PlatformIO and Espressif cores up to date (`pip install -U platformio` and `pio update`) to access the latest board definitions and toolchains.
 - **Tests:** Test scripts are in the `tests/` directory; some tests are hardware-dependent (serial ports, radio modules) and require the corresponding devices connected and configured. Run individual scripts with `python tests/<script>.py`.
+  - `espnow_debug.py` – send local KISS commands (`routes`/`peers`) to a node and print its responses.
 
 
 ## 7.0 OPERATIONAL PROCEDURES
@@ -347,6 +369,21 @@ pio run -e <environment_name>
 3. Send/receive KISS-framed Reticulum packets
 4. Monitor via serial debug output
 
+**Debug commands:**
+- You can send a local command packet (context `0xFE`) over serial or Bluetooth to control the node.
+  The payload should begin with an 8‑byte destination address (your own address or all zeros) followed
+  by an ASCII command string.
+  - `routes` – print the current routing table
+  - `peers` – print registered ESP‑NOW peers
+
+Example (using Python KISS helper):
+```python
+# build payload: dest=all zeros + ASCII
+cmd = b"\x00"*8 + b"routes"
+# send as KISS frame ...
+```
+These commands are useful when exercising ESP‑NOW networks, since the results appear on the
+serial console immediately.
 #### 7.3.2 WiFi Interface Operation
 1. Verify WiFi connection status
 2. Monitor UDP port 4242 for incoming packets

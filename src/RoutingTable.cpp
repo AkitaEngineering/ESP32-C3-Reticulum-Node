@@ -36,6 +36,10 @@ void RoutingTable::update(const RnsPacketInfo &announcePacket, InterfaceType int
                 memcpy(it->next_hop_mac, sender_mac, 6);
                 it->next_hop_ip = IPAddress(); // Clear IP
                 it->next_hop_port = 0;
+                // Make sure the peer is registered so that future sends succeed
+                if (ifManager) {
+                    ifManager->addEspNowPeer(sender_mac);
+                }
             } else if (interface == InterfaceType::WIFI_UDP) {
                  it->next_hop_ip = sender_ip;
                  it->next_hop_port = RNS_UDP_PORT; // Assume standard RNS port for outgoing
@@ -58,6 +62,10 @@ void RoutingTable::update(const RnsPacketInfo &announcePacket, InterfaceType int
 
              if (interface == InterfaceType::ESP_NOW) {
                 memcpy(newEntry.next_hop_mac, sender_mac, 6);
+                // register peer immediately to simplify future sends
+                if (ifManager) {
+                    ifManager->addEspNowPeer(sender_mac);
+                }
             } else if (interface == InterfaceType::WIFI_UDP) {
                  newEntry.next_hop_ip = sender_ip;
                  newEntry.next_hop_port = RNS_UDP_PORT;

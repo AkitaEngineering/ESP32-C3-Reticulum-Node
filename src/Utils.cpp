@@ -20,4 +20,12 @@ bool compareAddresses(const uint8_t* addr1, const uint8_t* addr2, size_t len) {
     return memcmp(addr1, addr2, len) == 0;
 }
 
+bool isAllZeros(const uint8_t* buf, size_t len) {
+    if (!buf) return false;
+    for (size_t i = 0; i < len; ++i) {
+        if (buf[i] != 0) return false;
+    }
+    return true;
+}
+
 } // namespace Utils
