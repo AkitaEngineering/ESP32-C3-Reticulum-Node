@@ -1,0 +1,7 @@
+ESP-ROM:esp32c3-api1-20210207
+ESP-ROM:esp32c3-api1-20210207
+Build:Feb  7 2021
+rst:0x15 (USB_UART_CHIP_RESET),boot:0x7 (DOWNLOAD(USB/UART0/1))
+Saved PC:0x4004c6d8
+waiting for download
+

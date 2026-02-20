@@ -179,7 +179,10 @@ The system supports the following interface types:
 
 #### 4.2.1 ESP32-C3
 - **UART**: UART0 (debug), UART1 (KISS interface)
-- **GPIO Pins**: 18 (RX), 19 (TX) for UART1
+- **GPIO Pins**: by default UART1 is remapped to avoid interfering with USB
+  D+/D- lines (GPIO18/19); the firmware uses GPIO2 (RX) and GPIO4 (TX) for
+  the KISS interface.  Do **not** use 18/19 for any other purpose if native
+  USB CDC is required.
 - **Bluetooth**: Not available (BLE only)
 
 #### 4.2.2 ESP32-S2

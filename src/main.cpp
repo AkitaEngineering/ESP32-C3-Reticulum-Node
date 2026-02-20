@@ -2,6 +2,17 @@
 #include "ReticulumNode.h"
 #include "Utils.h"
 
+// USB PID matches the bootloader so Windows can use the same installed
+// CDC driver.  The previous strategy of flipping the PID caused the host
+// to treat the device as unknown, which made COM disappear entirely (beep
+// sound) unless the driver was manually reinstalled.
+//
+// To work around Windows caching behavior we rely on a short wait/blink in
+// setup and allow the USB port to drop briefly; the user can simply re-open
+// the serial monitor after reset, or the system will re‑enumerate within a
+// second or two.  This keeps the user experience simple without driver
+// hassles.
+
 // Global instance of the main node application class
 ReticulumNode reticulumNode;
 
@@ -26,9 +37,33 @@ void myAppDataReceiver(const uint8_t *source_address, const std::vector<uint8_t>
 
 void setup()
 {
+  // initialize built-in LED for status
+  pinMode(LED_BUILTIN, OUTPUT);
+  digitalWrite(LED_BUILTIN, LOW);
+
   // Initialize Serial (USB/UART0) for debug output
   DebugSerial.begin(115200);
+  // wait up to 10 seconds for USB CDC to enumerate; blink LED while waiting
+  unsigned long start = millis();
+  while (!Serial && millis() - start < 10000) {
+    // blink LED at 2Hz during enumeration
+    digitalWrite(LED_BUILTIN, ((millis() / 250) & 1) ? HIGH : LOW);
+    delay(10);
+  }
+  // leave LED on if enumeration succeeded, off otherwise
+  digitalWrite(LED_BUILTIN, Serial ? HIGH : LOW);
+  // small delay to let host settle
   delay(100);
+
+  // Diagnostic early print to confirm USB is up (if it is)
+  if (Serial) {
+    DebugSerial.println("[BOOT] DebugSerial initialized (early)");
+  } else {
+    DebugSerial.println("[BOOT] Serial not available after initial wait");
+    // We can't force the USB reattach from software on ESP32-C3; rely on
+    // the blink indicator and PID change instead.  If enumeration fails the
+    // LED will remain off and the host should be unplugged/re-plugged.
+  }
 
   // Start KISS serial interface (platform-specific UART)
   KissSerial.begin(KISS_SERIAL_SPEED, SERIAL_8N1, KISS_UART_RX, KISS_UART_TX);
@@ -50,6 +85,16 @@ void setup()
 
 void loop()
 {
+  // Monitor USB connection state for debugging
+  static bool prevConnected = false;
+  bool curConnected = Serial;
+  if (curConnected && !prevConnected) {
+    DebugSerial.println("[USB] Host opened CDC");
+  } else if (!curConnected && prevConnected) {
+    DebugSerial.println("[USB] Host closed CDC");
+  }
+  prevConnected = curConnected;
+
   // Run the main node loop function
   reticulumNode.loop();
 

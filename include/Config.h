@@ -42,8 +42,15 @@ extern DebugSerialShim DebugSerial; // Use USB/UART0 for debug (Arduino Serial M
 #if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(CONFIG_IDF_TARGET_ESP32C5) || defined(CONFIG_IDF_TARGET_ESP32C6)
     #define KissSerial Serial1    // Use UART1 for KISS
     #if defined(CONFIG_IDF_TARGET_ESP32C3)
-        #define KISS_UART_RX 18   // ESP32-C3 UART1 default RX pin
-        #define KISS_UART_TX 19   // ESP32-C3 UART1 default TX pin
+        // On the ESP32-C3 the native USB D+/D- lines are on GPIO18/19.  Using
+        // the UART1 default pins (18/19) for the KISS interface will reconfigure
+        // the USB pins and disconnect the CDC port immediately after it
+        // enumerates, causing the host to report an "unknown device" and
+        // produce a beep.  Map UART1 to alternate GPIOs that are free by
+        // default (e.g. GPIO2/GPIO4) so USB can remain intact.  These choices
+        // can be overridden if your hardware requires different pins.
+        #define KISS_UART_RX 2    // alternate pin for UART1 RX (not USB)
+        #define KISS_UART_TX 4    // alternate pin for UART1 TX (not USB)
     #elif defined(CONFIG_IDF_TARGET_ESP32C5)
         #define KISS_UART_RX 18   // ESP32-C5 UART1 default RX pin
         #define KISS_UART_TX 19   // ESP32-C5 UART1 default TX pin
