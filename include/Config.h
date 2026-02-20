@@ -7,11 +7,29 @@
 #include <array> // For group addresses
 
 // --- Debug and Interface Configuration ---
-// Use Serial (UART0/USB) for debug messages (normal Arduino Serial Monitor)
-// Use Serial1/Serial2 (UART1/UART2) for KISS interface with Reticulum
+// Serial port selection can be swapped at compile time. By default
+// the USB/UART0 port (Serial) is used for debug and a hardware UART
+// (Serial1/Serial2) is used for the KISS data interface. This keeps
+// debug traffic separate from KISS frames. If you want to run KISS
+// directly over the USB CDC connection you can compile with
+// -DKISS_OVER_USB=1. Doing so will move debug output to Serial1 and
+// use Serial (USB) for KISS. Be aware that mixing debug text with
+// KISS packets may corrupt the data stream unless debugging is kept
+// very quiet or disabled.
 
 #ifndef DEBUG_ENABLED
 #define DEBUG_ENABLED 1  // Set to 1 to enable debug logging
+#endif
+
+// Choose which physical Serial port the debug shim will wrap. The
+// default is USB serial (Serial) but using KISS_OVER_USB will switch
+// it to Serial1 so the USB port is free for KISS traffic.
+#ifndef DEBUG_PORT
+    #ifdef KISS_OVER_USB
+        #define DEBUG_PORT Serial1
+    #else
+        #define DEBUG_PORT Serial
+    #endif
 #endif
 
 // Debug serial shim: when DEBUG_ENABLED is 0, debug output is suppressed while
@@ -19,18 +37,17 @@
 class DebugSerialShim : public Stream {
 public:
     void begin(unsigned long baud) {
-        (void)baud;
-        // Keep Serial initialized for potential USB connection even if debug is disabled.
-        Serial.begin(baud);
+        // initialize whichever serial port is configured for debugging
+        DEBUG_PORT.begin(baud);
     }
 
-    int available() override { return DEBUG_ENABLED ? Serial.available() : 0; }
-    int read() override { return DEBUG_ENABLED ? Serial.read() : -1; }
-    int peek() override { return DEBUG_ENABLED ? Serial.peek() : -1; }
-    void flush() override { if (DEBUG_ENABLED) Serial.flush(); }
-    size_t write(uint8_t b) override { return DEBUG_ENABLED ? Serial.write(b) : 1; }
+    int available() override { return DEBUG_ENABLED ? DEBUG_PORT.available() : 0; }
+    int read() override { return DEBUG_ENABLED ? DEBUG_PORT.read() : -1; }
+    int peek() override { return DEBUG_ENABLED ? DEBUG_PORT.peek() : -1; }
+    void flush() override { if (DEBUG_ENABLED) DEBUG_PORT.flush(); }
+    size_t write(uint8_t b) override { return DEBUG_ENABLED ? DEBUG_PORT.write(b) : 1; }
     size_t write(const uint8_t *buffer, size_t size) override {
-        return DEBUG_ENABLED ? Serial.write(buffer, size) : size;
+        return DEBUG_ENABLED ? DEBUG_PORT.write(buffer, size) : size;
     }
 };
 
@@ -39,7 +56,17 @@ extern DebugSerialShim DebugSerial; // Use USB/UART0 for debug (Arduino Serial M
 // Platform-specific UART configuration
 // ESP32-C3, ESP32-C5, ESP32-C6: Only UART0 and UART1 (no UART2)
 // ESP32, ESP32-S2, ESP32-S3: UART0, UART1, and UART2
-#if defined(CONFIG_IDF_TARGET_ESP32C3) || defined(CONFIG_IDF_TARGET_ESP32C5) || defined(CONFIG_IDF_TARGET_ESP32C6)
+#if defined(KISS_OVER_USB)
+    // If we're running KISS over the USB CDC port, just alias the
+    // primary Serial object as the KISS transport.  No external pins
+    // are required.  Debug output will be moved to Serial1 by the
+    // DEBUG_PORT mechanics above.
+    #define KissSerial Serial
+    // RX/TX pin defines are unused when using USB, but define them anyway
+    #define KISS_UART_RX 0
+    #define KISS_UART_TX 0
+
+#elif defined(CONFIG_IDF_TARGET_ESP32C3) || defined(CONFIG_IDF_TARGET_ESP32C5) || defined(CONFIG_IDF_TARGET_ESP32C6)
     #define KissSerial Serial1    // Use UART1 for KISS
     #if defined(CONFIG_IDF_TARGET_ESP32C3)
         // On the ESP32-C3 the native USB D+/D- lines are on GPIO18/19.  Using
