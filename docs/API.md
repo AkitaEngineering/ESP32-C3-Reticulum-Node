@@ -148,6 +148,8 @@ All endpoints require authentication when enabled (future: token / password prot
   - Request soft restart of node (admin only).
 - GET /api/v1/metrics
   - Prometheus-style or JSON metrics endpoint (if METRICS_ENABLED).
+  - When `METRICS_UDP_ENABLED` is also set the node will emit the same
+    metrics as a JSON string over UDP broadcast every `METRICS_INTERVAL_MS`.
 - POST /api/v1/ota
   - Upload a signed firmware image for OTA. Requires `OTA_ENABLED` and an Ed25519 `public_key` in `/config.json` under `api.public_key`.
   - Headers: `X-Signature-Ed25519: <hex-signature>` (64-byte signature, hex-encoded)

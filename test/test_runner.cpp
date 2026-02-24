@@ -12,6 +12,8 @@ void setup() {
     // Run unit tests
     RUN_TEST(test_ed25519_sign_verify);
     RUN_TEST(test_eeprom_persistence);
+    RUN_TEST(test_kiss_encode_escape);
+    RUN_TEST(test_serialize_deserialize_roundtrip);
     UNITY_END();
 }
 

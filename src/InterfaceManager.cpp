@@ -1,6 +1,7 @@
 #include "InterfaceManager.h"
 #include "Config.h"
 #include "Utils.h"
+#include "Log.h"
 #include "RoutingTable.h" // Need full definition now for RouteEntry
 #include "ReticulumPacket.h" // For MAX_PACKET_SIZE
 #include "AX25.h"
@@ -132,7 +133,7 @@ void InterfaceManager::loop() {
 
 void InterfaceManager::setupSerial() {
     // KissSerial (Serial2) is started in main.cpp for KISS interface
-    DebugSerial.println("IF: KISS Serial interface ready on Serial2 (GPIO16/17).");
+    LOG_INFO("IF: KISS Serial interface ready on Serial2 (GPIO16/17).");
 }
 
 void InterfaceManager::setupWiFi() {
@@ -146,14 +147,14 @@ void InterfaceManager::setupWiFi() {
     esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
     
     WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    DebugSerial.print("IF: Connecting to WiFi ");
+    LOG_INFO("IF: Connecting to WiFi %s", WIFI_SSID);
     int attempts = 0;
     while (WiFi.status() != WL_CONNECTED && attempts < 20) {
         delay(500); DebugSerial.print("."); attempts++;
     }
     if (WiFi.status() == WL_CONNECTED) {
-        DebugSerial.println("\nIF: WiFi connected.");
-        DebugSerial.print("IF: IP address: "); DebugSerial.println(WiFi.localIP());
+        LOG_INFO("IF: WiFi connected.");
+        LOG_INFO("IF: IP address: %s", WiFi.localIP().toString().c_str());
         setenv("TZ", "UTC0", 1);
         tzset();
         configTime(0, 0, "pool.ntp.org", "time.nist.gov", "time.google.com");
@@ -163,7 +164,7 @@ void InterfaceManager::setupWiFi() {
             DebugSerial.println("! ERROR: Failed to start UDP listener!");
         }
     } else {
-        DebugSerial.println("\n! IF: WiFi connection failed.");
+        LOG_WARN("IF: WiFi connection failed.");
         // Node might operate without WiFi, but UDP interface won't work
     }
 }
@@ -234,7 +235,7 @@ void InterfaceManager::processWiFiInput() {
         // Use unique_ptr for automatic memory management
         std::unique_ptr<uint8_t[]> udpBuffer(new (std::nothrow) uint8_t[packetSize]);
         if (!udpBuffer) {
-             DebugSerial.println("! ERROR: new failed for UDP buffer!");
+             LOG_ERROR("new failed for UDP buffer!");
              _udp.flush();
              return;
         }
@@ -413,11 +414,23 @@ void InterfaceManager::sendPacketViaWiFi(const uint8_t *packetBuffer, size_t pac
     if (!_udp.endPacket()) { DebugSerial.println("! ERROR: UDP endPacket failed!"); }
 }
 
+#if METRICS_ENABLED && METRICS_UDP_ENABLED
+void InterfaceManager::sendUdpMetrics(const String &json) {
+    if (WiFi.status() != WL_CONNECTED) return;
+    IPAddress bcast = WiFi.broadcastIP();
+    if (!bcast || bcast == INADDR_NONE) return;
+    _udp.beginPacket(bcast, METRICS_UDP_PORT);
+    _udp.print(json);
+    _udp.endPacket();
+    LOG_DEBUG("UDP metrics sent to %s:%u", bcast.toString().c_str(), METRICS_UDP_PORT);
+}
+#endif
+
 // KISS interface sends packaets over dedicated serial link
 void InterfaceManager::sendPacketViaSerial(const uint8_t *packetBuffer, size_t packetLen) {
     std::vector<uint8_t> kissEncoded;
     KISSProcessor::encode(packetBuffer, packetLen, kissEncoded);
-    size_t sent = KissSerial.write(kissEncoded.data(), kissEncoded.size());
+    (void)KissSerial.write(kissEncoded.data(), kissEncoded.size()); // ignore return value
     // if(sent != kissEncoded.size()) { DebugSerial.println("! WARN: Serial write incomplete"); } // Optional check
 }
 #if BLUETOOTH_CLASSIC_AVAILABLE

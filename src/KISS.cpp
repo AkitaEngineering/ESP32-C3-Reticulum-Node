@@ -4,9 +4,9 @@
 #include <Arduino.h> // For Serial debug
 
 KISSProcessor::KISSProcessor(PacketHandler handler) :
-    _packetHandler(handler),
     _inEscapeState(false),
-    _expectingCommand(true)  // Start expecting command byte after first FEND
+    _expectingCommand(true),  // Start expecting command byte after first FEND
+    _packetHandler(handler)
 {
      // Reserve some buffer space upfront if desired
      // _receiveBuffer.reserve(MAX_PACKET_SIZE / 2);

@@ -127,6 +127,17 @@ extern DebugSerialShim DebugSerial; // Use USB/UART0 for debug (Arduino Serial M
 #ifndef WEBSERVER_ENABLED
 #define WEBSERVER_ENABLED 0
 #endif
+
+// sanity checks for feature combinations
+#if WEBSERVER_ENABLED && !JSON_CONFIG_ENABLED
+    #error "WEBSERVER_ENABLED requires JSON_CONFIG_ENABLED for runtime config"
+#endif
+#if WEBSERVER_ENABLED && !OTA_ENABLED
+    #error "WEBSERVER_ENABLED should accompany OTA_ENABLED to provide firmware updates"
+#endif
+#if OTA_ENABLED && !JSON_CONFIG_ENABLED
+    #warning "OTA_ENABLED without JSON_CONFIG_ENABLED means updates cannot be disabled/controlled at runtime"
+#endif
 #ifndef WEBSERVER_PORT
 #define WEBSERVER_PORT 80
 #endif
@@ -156,6 +167,18 @@ extern DebugSerialShim DebugSerial; // Use USB/UART0 for debug (Arduino Serial M
 // Runtime metrics endpoint (JSON) and adjustable log levels
 #ifndef METRICS_ENABLED
 #define METRICS_ENABLED 0
+#endif
+
+// Metrics/telemetry configuration
+#ifndef METRICS_UDP_ENABLED
+#define METRICS_UDP_ENABLED 1    // send periodic UDP heartbeat when WiFi is up
+#endif
+#ifndef METRICS_UDP_PORT
+#define METRICS_UDP_PORT 4243    // port used for UDP metrics broadcasts
+#endif
+// interval for sending UDP metrics (usually same as MEM_CHECK_INTERVAL_MS)
+#ifndef METRICS_INTERVAL_MS
+#define METRICS_INTERVAL_MS (MEM_CHECK_INTERVAL_MS)
 #endif
 
 // ESP-NOW channel (0 = inherit current WiFi channel)
@@ -201,9 +224,15 @@ const unsigned long LINK_INACTIVITY_TIMEOUT_MS = ROUTE_TIMEOUT_MS * 2; // Timeou
 const uint8_t LINK_MAX_RETRIES = 3; // Max retries for a packet before closing link
 const size_t LINK_MAX_ACTIVE = 10; // Max concurrent active links (Adjust based on memory)
 
+static_assert(LINK_MAX_ACTIVE > 0, "LINK_MAX_ACTIVE must be at least 1");
+
 // --- Routing & Limits ---
 const size_t MAX_ROUTES = 20;             // Max entries in routing table
 const size_t MAX_RECENT_ANNOUNCES = 40; // Max announce IDs to remember for loop prevention
+
+// compile‑time sanity
+static_assert(MAX_ROUTES > 0, "MAX_ROUTES must be positive");
+static_assert(MAX_RECENT_ANNOUNCES > 0, "MAX_RECENT_ANNOUNCES must be positive");
 
 // --- Group Addresses ---
 // Define groups this node belongs to. Example:

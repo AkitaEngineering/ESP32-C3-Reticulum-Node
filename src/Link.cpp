@@ -367,7 +367,7 @@ void Link::retransmitOldestPending() {
 
      PendingPacket& pending = _pendingOutgoingPackets.front();
      pending.lastSentTime = millis();
-     uint16_t oldPacketId = pending.packetInfo.packet_id;
+     // uint16_t oldPacketId = pending.packetInfo.packet_id; // unused
      pending.packetInfo.packet_id = _ownerRef.getNextPacketId(); // Use new packet ID
 
      DebugSerial.print("Link Retransmitting seq "); DebugSerial.print(pending.packetInfo.sequence_number);

@@ -51,8 +51,10 @@ time.sleep(2)
 # construct and send a test packet
 print("sending test packet")
 dest = RNS.Destination(None, RNS.Destination.OUT, RNS.Destination.PLAIN, "esp32", "node")
-pkt = RNS.Packet(dest, b"hello from pc with RNS")
+# ping payload so the ESP32 node should respond with a pong string
+pkt = RNS.Packet(dest, b"ping")
 pkt.send()
+print("(sent ping, waiting for pong replies)")
 
 # keep running long enough to possibly receive a response
 for i in range(10):

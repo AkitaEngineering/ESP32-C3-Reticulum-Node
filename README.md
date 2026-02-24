@@ -344,6 +344,47 @@ pio run -e <environment_name>
 
 ## 7.0 OPERATIONAL PROCEDURES
 
+### 7.1 Building for Production
+
+#### Log Levels
+
+The firmware provides a simple log‑level mechanism controlled by the
+`LOG_LEVEL` macro (defined in `include/Log.h`).  Levels are:
+
+- 0: none (no output)
+- 1: error
+- 2: warn *(default for production)*
+- 3: info
+- 4: debug *(default when `DEBUG_ENABLED=1`)*
+
+Override the default by adding `-DLOG_LEVEL=N` to your build flags or by
+setting `LOG_LEVEL` in `Config.h` prior to including `Log.h`.
+
+### 7.1 Building for Production
+
+The `platformio.ini` file contains several environments.  The default
+`esp32-c3-devkitm-1` prefix is intended for development and debugging.  For
+production use the `esp32-c3-prod` environment which:
+
+1. Compiles with `-Os` for size and enables `-Wall -Werror` to catch warnings.
+2. Disables all debug logging (`DEBUG_ENABLED=0`).
+3. Strips symbols and omits demo traffic.
+
+Build with:
+
+```bash
+# base production firmware
+pio run -e esp32-c3-prod
+# include HTTP metrics endpoint and UDP heartbeat as well
+pio run -e esp32-c3-prod -D METRICS_ENABLED=1 -D METRICS_UDP_ENABLED=1
+# or upload directly:
+pio run -e esp32-c3-prod -t upload
+```
+
+You can adjust the `LOG_LEVEL` macro at compile time if you need more or less
+runtime verbosity (see section 7.4).
+
+
 ### 7.1 System Startup Procedure
 1. Apply power to ESP32 device
 2. Observe serial monitor output (115200 baud)
@@ -488,9 +529,9 @@ Bytes 19+:  Payload data
 
 ### 10.1 Preventive Maintenance
 - **Periodic Checks**: Verify system operation weekly
-- **Memory Monitoring**: Check free heap periodically
+- **Memory Monitoring**: Check free heap, stack high‑water mark and overall heap usage printed by the firmware every 15 s when debug logs are enabled.  Look for steady decreases or unusually low free heap values.  When `METRICS_ENABLED` is set the device will also broadcast a JSON telemetry heartbeat over UDP to port `METRICS_UDP_PORT` (default 4243) whenever the memory check runs.
 - **Route Table**: Monitor route table size and staleness
-- **Link Status**: Monitor active link count
+- **Link Status**: Monitor active link count (also printed with memory stats)
 
 ### 10.2 Troubleshooting Procedures
 
@@ -517,6 +558,19 @@ Bytes 19+:  Payload data
 2. Reduce maximum routes/links if neededb
 3. Reduce payload size if needed
 4. Disable unused interfaces
+
+#### 10.2.5 Node Appears Dead / Not Responding
+1. Send a simple "ping" packet to the node's address (payload consists of the ASCII
+   string `"ping"`).  A correctly functioning node will automatically reply with
+   a `"pong"` payload.  The `tests/send_and_sniff.py` script demonstrates this
+   behaviour.
+2. Alternatively, issue a zero‑length LOCAL_CMD over the serial/BT interface; the
+   node will print a confirmation message on the debug console.
+3. Check for announce messages in the serial log – the node now prints a
+   liveness message each time it sends its periodic announce and blinks the LED.
+4. Ensure the routing table contains a route to the target; stale/expired routes
+   can make a live node seem unreachable.  See Section 6.3.6 for route troubleshooting.
+
 
 ### 10.3 Diagnostic Commands
 - **Serial Monitor**: Provides real-time status and debug information

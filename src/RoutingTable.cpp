@@ -114,7 +114,7 @@ RouteEntry* RoutingTable::findRoute(const uint8_t *destination_addr) {
 void RoutingTable::prune(InterfaceManager* ifManager) {
     unsigned long now = millis();
     if (now - _last_prune_time > PRUNE_INTERVAL_MS) {
-        bool changed = false;
+        //bool changed = false; // unused in current logic, kept for potential future logging
         for (auto it = _routes.begin(); it != _routes.end(); /* manual increment */ ) {
             if (now - it->last_heard_time > ROUTE_TIMEOUT_MS) {
                  DebugSerial.print("RT: Route timed out for "); Utils::printBytes(it->destination_addr, RNS_ADDRESS_SIZE, Serial); DebugSerial.println();
@@ -123,7 +123,7 @@ void RoutingTable::prune(InterfaceManager* ifManager) {
                       ifManager->removeEspNowPeer(it->next_hop_mac);
                  }
                 it = _routes.erase(it); // Erase and get iterator to next element
-                changed = true;
+                // changed = true; // tracking variable removed
             } else {
                 ++it; // Only increment if not erased
             }

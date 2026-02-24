@@ -84,7 +84,7 @@ struct RnsPacketInfo {
     uint16_t sequence_number = 0;                  // Legacy sequence number
     std::vector<uint8_t> payload;                  // Legacy payload (alias to data)
 
-    RnsPacketInfo() : valid(false), packet_len(0) {}
+    RnsPacketInfo() : packet_len(0), valid(false) {}
 
     // Helper to parse flags byte
     void parseFlags() {

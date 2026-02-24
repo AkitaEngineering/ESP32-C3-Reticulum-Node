@@ -4,8 +4,13 @@
 #include "ReticulumPacket.h"
 #include "LinkManager.h"      // Needs definition for _linkManager member
 #include "InterfaceManager.h" // Needs definition for _interfaceManager member
-#include "RoutingTable.h"     // Needs definition for _routingTable member
+#include "RoutingTable.h"     // Needs definition for _routing_table member
+#include "Log.h"
 #include <EEPROM.h>           // Include EEPROM library
+#include <freertos/FreeRTOS.h> // for uxTaskGetStackHighWaterMark
+#if METRICS_ENABLED
+#include <ArduinoJson.h>
+#endif
 
 // Constructor: Initialize members, especially LinkManager passing *this
 ReticulumNode::ReticulumNode() :
@@ -35,6 +40,11 @@ void ReticulumNode::setup() {
     printNodeAddress();
     _subscribedGroups = SUBSCRIBED_GROUPS; // Copy groups from Config.h
 
+    // runtime sanity checks
+    if (strlen(WIFI_SSID) == 0 || strlen(WIFI_PASSWORD) == 0) {
+        LOG_WARN("WiFi credentials appear empty; WiFi interface may not connect.");
+    }
+
     // Setup interfaces (which also sets up UDP, ESP-NOW etc)
     _interfaceManager.setup();
 
@@ -45,11 +55,11 @@ void ReticulumNode::setup() {
     // Ensure routing table prune timer is initialized
     _routingTable.prune(nullptr); // Initial call to set timer base
 
-    DebugSerial.print("Node Setup Complete. Free Heap: "); DebugSerial.println(ESP.getFreeHeap());
+    LOG_INFO("Node Setup Complete. Free Heap: %u", ESP.getFreeHeap());
 }
 
 void ReticulumNode::loop() {
-    unsigned long now = millis(); // Get time once per loop
+    // unsigned long now = millis(); // Get time once per loop (unused)
 
     _interfaceManager.loop();     // Process interface inputs
     _linkManager.checkAllTimeouts(); // Check Link timeouts/retransmissions
@@ -68,7 +78,7 @@ void ReticulumNode::loadConfig() {
         _packetCounter = random(0,0xFFFF); // Start with random counter
         return;
     }
-    DebugSerial.println("Loading config from EEPROM...");
+    LOG_INFO("Loading config from EEPROM...");
     loadOrGenerateAddress(); // Load or generate node address
     loadPacketCounter(); // Load last packet counter
     // EEPROM.end(); // Optional: close EEPROM if not needed constantly
@@ -89,7 +99,7 @@ void ReticulumNode::loadOrGenerateAddress() {
     }
     if (allZeros || allFs) {
         needsGenerating = true;
-        DebugSerial.println("No valid address in EEPROM or first boot.");
+        LOG_WARN("No valid address in EEPROM or first boot.");
     }
 
     if (needsGenerating) {
@@ -97,7 +107,7 @@ void ReticulumNode::loadOrGenerateAddress() {
         saveNodeAddress();
     } else {
         memcpy(_nodeAddress, storedAddr, RNS_ADDRESS_SIZE);
-        DebugSerial.println("Loaded address from EEPROM.");
+        LOG_INFO("Loaded address from EEPROM.");
     }
 }
 
@@ -210,13 +220,26 @@ void ReticulumNode::printNodeAddress() {
 void ReticulumNode::checkMemoryUsage() {
     unsigned long now = millis();
     if (now - _last_mem_check_time > MEM_CHECK_INTERVAL_MS) {
-        DebugSerial.print("[Mem] Free Heap: "); DebugSerial.print(ESP.getFreeHeap());
-        // Additional diagnostics
-        DebugSerial.print(" Routes: "); DebugSerial.print(_routingTable.getRouteCount());
-        DebugSerial.println();
-        // Print esp-now peers for debugging
+        size_t free_heap = ESP.getFreeHeap();
+        size_t highwater = uxTaskGetStackHighWaterMark(NULL);
+        LOG_INFO("[Mem] Free Heap: %u, Stack high-water: %u, Routes: %u, Links: %u",
+                 free_heap,
+                 highwater,
+                 _routingTable.getRouteCount(),
+                 _linkManager.getActiveLinkCount());
+        // Print esp-now peers for debugging (may be verbose)
         _interfaceManager.printEspNowPeers();
 
+#if METRICS_ENABLED && METRICS_UDP_ENABLED
+        // send JSON metrics over UDP broadcast
+        DynamicJsonDocument doc(256);
+        doc["heap_free"] = free_heap;
+        doc["stack_high"] = highwater;
+        doc["routes"] = _routingTable.getRouteCount();
+        doc["links"] = _linkManager.getActiveLinkCount();
+        String out; serializeJson(doc, out);
+        _interfaceManager.sendUdpMetrics(out);
+#endif
         _last_mem_check_time = now;
     }
 }
@@ -225,7 +248,9 @@ void ReticulumNode::sendAnnounceIfNeeded() {
     unsigned long now = millis();
     // Check if announce interval has passed
     if (now - _last_announce_time > ANNOUNCE_INTERVAL_MS) {
-        // DebugSerial.println("Generating Announce packet..."); // Verbose
+        // announce acts as a liveness beacon; log each time so external monitors can see us
+        DebugSerial.println("[Node] Sending periodic announce (alive).");
+
         RnsPacketInfo announcePkt;
         announcePkt.header_type = RNS_HEADER_TYPE_ANN;
         announcePkt.context = RNS_CONTEXT_NONE;
@@ -235,7 +260,6 @@ void ReticulumNode::sendAnnounceIfNeeded() {
         memset(announcePkt.destination, 0, RNS_ADDRESS_SIZE);
         announcePkt.source_type = RNS_DST_TYPE_SINGLE;
         memcpy(announcePkt.source, _nodeAddress, RNS_ADDRESS_SIZE);
-        // announcePkt.payload = {'G','W','v','3'}; // Optional: Add application aspects/version
 
         uint8_t buffer[MAX_PACKET_SIZE];
         size_t len = 0;
@@ -245,6 +269,10 @@ void ReticulumNode::sendAnnounceIfNeeded() {
             announcePkt.hops, announcePkt.payload, 0)) // No sequence number
         {
             _interfaceManager.broadcastAnnounce(buffer, len); // Use InterfaceManager to send
+            // blink LED briefly to show we're alive
+            digitalWrite(LED_BUILTIN, HIGH);
+            delay(20);
+            digitalWrite(LED_BUILTIN, LOW);
         } else {
              DebugSerial.println("! ERROR: Failed to serialize own Announce packet!");
         }
@@ -259,12 +287,15 @@ void ReticulumNode::handleReceivedPacket(const uint8_t *packetBuffer, size_t pac
 {
     RnsPacketInfo packetInfo;
     if (!ReticulumPacket::deserialize(packetBuffer, packetLen, packetInfo)) {
-        // DebugSerial.println("! Deserialize failed in Node. Discarding."); // Verbose
+        DebugSerial.println("! Node: failed to deserialize incoming packet, discarding.");
         return;
     }
 
     // Ignore packets sourced from self that might have looped back
-    if (Utils::compareAddresses(packetInfo.source, _nodeAddress)) { return; }
+    if (Utils::compareAddresses(packetInfo.source, _nodeAddress)) {
+        DebugSerial.println("[Node] Dropping packet sourced from self (loopback).");
+        return;
+    }
 
     // --- 1. Link Layer Packet Handling ---
     if (packetInfo.context == RNS_CONTEXT_LINK_REQ ||
@@ -286,13 +317,11 @@ void ReticulumNode::handleReceivedPacket(const uint8_t *packetBuffer, size_t pac
     }
 
     // --- 3. Data / Other Packet Handling (Check Destination) ---
-    bool processedLocally = false;
-    bool isGroupMember = false;
-
     // Check destination: Single Address Match
     if (packetInfo.destination_type == RNS_DST_TYPE_SINGLE &&
         Utils::compareAddresses(packetInfo.destination, _nodeAddress))
     {
+        DebugSerial.println("[Node] Packet addressed to self (single).");
         processPacketForSelf(packetInfo, interface);
         // Do not forward packets addressed directly to this node
         return;
@@ -302,8 +331,9 @@ void ReticulumNode::handleReceivedPacket(const uint8_t *packetBuffer, size_t pac
     {
         for (const auto& group : _subscribedGroups) {
             if (Utils::compareAddresses(packetInfo.destination, group.data())) {
+                DebugSerial.println("[Node] Packet addressed to subscribed group.");
                 processPacketForSelf(packetInfo, interface);
-                isGroupMember = true; // Mark that we processed it as a group member
+                // (keep iterating to allow logging of first-matching group if needed)
                 break; // Processed locally, but MUST continue to forwarding
             }
         }
@@ -314,8 +344,8 @@ void ReticulumNode::handleReceivedPacket(const uint8_t *packetBuffer, size_t pac
         for (const auto& group : _subscribedGroups) {
             // PLAIN destinations use a 16-byte hash, but we compare first 8 bytes
             if (Utils::compareAddresses(packetInfo.destination_hash, group.data())) {
+                DebugSerial.println("[Node] Packet addressed to subscribed PLAIN destination.");
                 processPacketForSelf(packetInfo, interface);
-                isGroupMember = true; // Mark that we processed it
                 break; // Processed locally, but MUST continue to forwarding
             }
         }
@@ -336,6 +366,11 @@ void ReticulumNode::processPacketForSelf(const RnsPacketInfo& packetInfo, Interf
     if (packetInfo.context == RNS_CONTEXT_LOCAL_CMD &&
        (interface == InterfaceType::SERIAL_PORT || interface == InterfaceType::BLUETOOTH))
     {
+        // allow zero‑length payload as a simple "PING" from the host
+        if (packetInfo.payload.empty()) {
+            DebugSerial.println("> CMD: received local ping from host – node is alive");
+            return; // nothing else to do
+        }
         if (packetInfo.payload.size() >= RNS_ADDRESS_SIZE) { // Must have at least destination addr
             uint8_t targetDest[RNS_ADDRESS_SIZE];
             memcpy(targetDest, packetInfo.payload.data(), RNS_ADDRESS_SIZE);
@@ -344,7 +379,7 @@ void ReticulumNode::processPacketForSelf(const RnsPacketInfo& packetInfo, Interf
             std::vector<uint8_t> actualPayload;
             if (packetInfo.payload.size() > RNS_ADDRESS_SIZE) {
                  actualPayload.assign(packetInfo.payload.begin() + RNS_ADDRESS_SIZE, packetInfo.payload.end());
-            } // else: payload is empty, might be a ping command?
+            } // else: payload is empty, might be a ping command from host
 
             // Look for text commands (e.g. "routes" or "peers") when dest is our own address or all zeros
             bool handled = false;
@@ -370,7 +405,6 @@ void ReticulumNode::processPacketForSelf(const RnsPacketInfo& packetInfo, Interf
                 // Initiate reliable send via LinkManager
                 if (!_linkManager.sendReliableData(targetDest, actualPayload)) {
                      DebugSerial.println("! CMD Failed: Could not initiate reliable send.");
-                     // Optionally send failure notification back via KISS? Complex.
                 }
             }
 
@@ -389,6 +423,29 @@ void ReticulumNode::processPacketForSelf(const RnsPacketInfo& packetInfo, Interf
     DebugSerial.print(" Payload: [");
     for(uint8_t byte : packetInfo.payload) { if(isprint(byte)) DebugSerial.print((char)byte); else DebugSerial.print('.'); }
     DebugSerial.println("]");
+
+    // respond to simple ping payloads automatically
+    if (packetInfo.payload.size() == 4 &&
+        packetInfo.payload[0] == 'p' && packetInfo.payload[1] == 'i' &&
+        packetInfo.payload[2] == 'n' && packetInfo.payload[3] == 'g')
+    {
+        DebugSerial.println("[Node] Received ping, sending pong reply.");
+        std::vector<uint8_t> pong = {'p','o','n','g'};
+        uint8_t buf[MAX_PACKET_SIZE];
+        size_t outlen = 0;
+        if (ReticulumPacket::serialize(buf, outlen,
+                                       packetInfo.source, // destination = original sender
+                                       _nodeAddress,
+                                       packetInfo.destination_type,
+                                       RNS_HEADER_TYPE_DATA,
+                                       RNS_CONTEXT_NONE,
+                                       getNextPacketId(),
+                                       packetInfo.hops,
+                                       pong, 0))
+        {
+            _interfaceManager.sendPacket(buf, outlen, packetInfo.source, interface);
+        }
+    }
 
     // Call app handler for unreliable data too
     if (_appDataHandler) { _appDataHandler(packetInfo.source, packetInfo.payload); }

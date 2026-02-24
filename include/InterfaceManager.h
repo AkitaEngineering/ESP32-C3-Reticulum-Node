@@ -55,6 +55,10 @@ public:
     void sendPacketVia(InterfaceType ifType, const uint8_t *packetBuffer, size_t packetLen, const uint8_t *destinationAddr);
     // Broadcasts an announce packet on relevant interfaces
     void broadcastAnnounce(const uint8_t *packetBuffer, size_t packetLen);
+#if METRICS_ENABLED && METRICS_UDP_ENABLED
+    // send periodic JSON metrics via UDP broadcast
+    void sendUdpMetrics(const String &json);
+#endif
 #ifdef LORA_ENABLED
     // LoRa-specific methods
     bool isLoRaInitialized() const { return _loraInitialized; }
