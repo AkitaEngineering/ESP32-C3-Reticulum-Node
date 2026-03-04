@@ -252,21 +252,26 @@ void ReticulumNode::sendAnnounceIfNeeded() {
         DebugSerial.println("[Node] Sending periodic announce (alive).");
 
         RnsPacketInfo announcePkt;
-        announcePkt.header_type = RNS_HEADER_TYPE_ANN;
-        announcePkt.context = RNS_CONTEXT_NONE;
-        announcePkt.packet_id = getNextPacketId(); // Use own method
         announcePkt.hops = 0;
-        announcePkt.destination_type = RNS_DST_TYPE_GROUP; // Implicit broadcast
-        memset(announcePkt.destination, 0, RNS_ADDRESS_SIZE);
-        announcePkt.source_type = RNS_DST_TYPE_SINGLE;
         memcpy(announcePkt.source, _nodeAddress, RNS_ADDRESS_SIZE);
+
+        // Pack source address into payload so receivers can identify the announcer
+        // Official Reticulum announce payload: [SOURCE_ADDR 8] [app data...]
+        std::vector<uint8_t> announcePayload(_nodeAddress, _nodeAddress + RNS_ADDRESS_SIZE);
+
+        // Broadcast announce with 16-byte all-zeros destination hash
+        uint8_t announceDestHash[RNS_TRUNCATED_HASHLENGTH_BYTES] = {0};
 
         uint8_t buffer[MAX_PACKET_SIZE];
         size_t len = 0;
         if (ReticulumPacket::serialize(buffer, len,
-            announcePkt.destination, announcePkt.source, announcePkt.destination_type,
-            announcePkt.header_type, announcePkt.context, announcePkt.packet_id,
-            announcePkt.hops, announcePkt.payload, 0)) // No sequence number
+            announceDestHash,               // 16-byte destination hash (all zeros = broadcast)
+            RNS_PACKET_ANNOUNCE,             // packet_type = ANNOUNCE
+            RNS_DEST_PLAIN,                  // destination_type = PLAIN (unencrypted broadcast)
+            RNS_PROPAGATION_BROADCAST,       // propagation = broadcast
+            RNS_CONTEXT_NONE,                // context
+            0,                               // hops = 0 (originator)
+            announcePayload))                // payload contains source address
         {
             _interfaceManager.broadcastAnnounce(buffer, len); // Use InterfaceManager to send
             // blink LED briefly to show we're alive
@@ -309,7 +314,8 @@ void ReticulumNode::handleReceivedPacket(const uint8_t *packetBuffer, size_t pac
     }
 
     // --- 2. Announce Packet Handling ---
-    if ((packetInfo.header_type & RNS_HEADER_TYPE_MASK) == RNS_HEADER_TYPE_ANN) {
+    // Official Reticulum format: announces identified by packet_type field (bits 0-1 of flags)
+    if (packetInfo.packet_type == RNS_PACKET_ANNOUNCE) {
         // DebugSerial.println("Node: Processing Announce..."); // Verbose
         _routingTable.update(packetInfo, interface, sender_mac, sender_ip, sender_port, &_interfaceManager);
         forwardAnnounce(packetInfo, interface); // Attempt re-broadcast
@@ -433,15 +439,21 @@ void ReticulumNode::processPacketForSelf(const RnsPacketInfo& packetInfo, Interf
         std::vector<uint8_t> pong = {'p','o','n','g'};
         uint8_t buf[MAX_PACKET_SIZE];
         size_t outlen = 0;
+
+        // Construct 16-byte reply destination from sender's source address
+        // Note: For official-format data packets source is all zeros (no transport header),
+        // so pong only works for announces or when source is carried in the payload.
+        uint8_t replyDestHash[RNS_TRUNCATED_HASHLENGTH_BYTES] = {0};
+        memcpy(replyDestHash, packetInfo.source, RNS_ADDRESS_SIZE);
+
         if (ReticulumPacket::serialize(buf, outlen,
-                                       packetInfo.source, // destination = original sender
-                                       _nodeAddress,
-                                       packetInfo.destination_type,
-                                       RNS_HEADER_TYPE_DATA,
+                                       replyDestHash,
+                                       RNS_PACKET_DATA,
+                                       RNS_DEST_SINGLE,
+                                       RNS_PROPAGATION_BROADCAST,
                                        RNS_CONTEXT_NONE,
-                                       getNextPacketId(),
-                                       packetInfo.hops,
-                                       pong, 0))
+                                       0,
+                                       pong))
         {
             _interfaceManager.sendPacket(buf, outlen, packetInfo.source, interface);
         }
@@ -465,11 +477,15 @@ void ReticulumNode::forwardPacket(const RnsPacketInfo& packetInfo, InterfaceType
 
     uint8_t forwardBuffer[MAX_PACKET_SIZE];
     size_t forwardLen = 0;
-    // Need to serialize using the *original* data payload, not link-processed one
+    // Use official Reticulum wire format for forwarding
     if (!ReticulumPacket::serialize(forwardBuffer, forwardLen,
-        forwardInfo.destination, forwardInfo.source, forwardInfo.destination_type,
-        forwardInfo.header_type, forwardInfo.context, forwardInfo.packet_id,
-        forwardInfo.hops, forwardInfo.payload, 0)) // Pass original payload, no sequence num
+        forwardInfo.destination_hash,      // 16-byte destination hash
+        forwardInfo.packet_type,           // preserve packet type
+        forwardInfo.destination_type,      // preserve dest type
+        forwardInfo.propagation_type,      // preserve propagation type
+        forwardInfo.context,               // preserve context
+        forwardInfo.hops,                  // already incremented
+        forwardInfo.data))                 // full data payload
     {
         DebugSerial.println("! ERROR: Failed to serialize packet for forwarding!");
         return;
@@ -502,11 +518,15 @@ void ReticulumNode::forwardAnnounce(const RnsPacketInfo& packetInfo, InterfaceTy
 
     uint8_t forwardBuffer[MAX_PACKET_SIZE];
     size_t forwardLen = 0;
-    // Serialize announce (no sequence number)
+    // Use official Reticulum format; forwardInfo.data still contains [SOURCE 8][payload]
     if (!ReticulumPacket::serialize(forwardBuffer, forwardLen,
-        forwardInfo.destination, forwardInfo.source, forwardInfo.destination_type,
-        forwardInfo.header_type, forwardInfo.context, forwardInfo.packet_id,
-        forwardInfo.hops, forwardInfo.payload, 0))
+        forwardInfo.destination_hash,     // 16-byte destination hash
+        RNS_PACKET_ANNOUNCE,              // packet_type = ANNOUNCE
+        forwardInfo.destination_type,     // preserve dest type
+        RNS_PROPAGATION_BROADCAST,        // always broadcast announces
+        forwardInfo.context,              // preserve context
+        forwardInfo.hops,                 // already incremented
+        forwardInfo.data))                // full data payload (includes source prefix)
     {
         DebugSerial.println("! ERROR: Failed to serialize announce for forwarding!");
         return;

@@ -40,6 +40,14 @@ bool deserialize(const uint8_t *buffer, size_t len, RnsPacketInfo &info) {
     // It would only be added by transport nodes (Header 2), which we don't handle yet
     memset(info.source, 0, RNS_ADDRESS_SIZE);
 
+    // For announce packets, source address is carried at the start of the data payload
+    // Format: [SOURCE_ADDR 8] [remaining announce data...]
+    if (info.packet_type == RNS_PACKET_ANNOUNCE && info.data.size() >= RNS_ADDRESS_SIZE) {
+        memcpy(info.source, info.data.data(), RNS_ADDRESS_SIZE);
+        // Strip source prefix from the legacy payload alias, keep full data intact
+        info.payload.assign(info.data.begin() + RNS_ADDRESS_SIZE, info.data.end());
+    }
+
     info.packet_len = len;
     info.valid = true;
 
