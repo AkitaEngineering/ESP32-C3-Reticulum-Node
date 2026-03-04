@@ -4,8 +4,8 @@ Real KISS Mesh Relay Test
 =========================
 Sends a real Reticulum packet from PC → KISS USB → Board A → ESP-NOW → Board B
 
-Board A (/dev/ttyACM0): esp32-c3-kiss-usb firmware (KISS TNC over USB CDC)
-Board B (/dev/ttyACM2): esp32-c3-devkitm-1 firmware (debug output over USB CDC)
+Board A (/dev/ttyACM1): esp32-c3-kiss-usb firmware (KISS TNC over USB CDC)
+Board B (/dev/ttyACM0): esp32-c3-devkitm-1 firmware (debug output over USB CDC)
 
 This script:
   1. Constructs a valid Reticulum wire-format packet targeting the PLAIN
@@ -25,8 +25,8 @@ import threading
 import serial
 
 # --- Configuration ---
-KISS_PORT = "/dev/ttyACM0"   # Board A: KISS TNC (esp32-c3-kiss-usb)
-DEBUG_PORT = "/dev/ttyACM2"  # Board B: Debug serial (esp32-c3-devkitm-1)
+KISS_PORT = "/dev/ttyACM1"   # Board A: KISS TNC (esp32-c3-kiss-usb)
+DEBUG_PORT = "/dev/ttyACM0"  # Board B: Debug serial (esp32-c3-devkitm-1)
 BAUD = 115200
 TIMEOUT = 15  # seconds to wait for relay
 

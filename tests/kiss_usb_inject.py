@@ -13,7 +13,7 @@ import termios
 import threading
 
 # --- Ports ---
-KISS_PORT = "/dev/ttyACM2"   # Board A: KISS_OVER_USB
+KISS_PORT = "/dev/ttyACM1"   # Board A: KISS_OVER_USB
 DEBUG_PORT = "/dev/ttyACM0"  # Board B: standard firmware debug
 
 # --- KISS constants ---
