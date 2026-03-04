@@ -137,8 +137,8 @@ void loop()
       DebugSerial.print("Message: ");
       DebugSerial.println(msg);
 
-      // Send via Serial interface with KISS framing
-      reticulumNode.getInterfaceManager().sendPacketVia(InterfaceType::SERIAL_PORT, buffer, packet_len, dest_hash);
+      // Send via all available interfaces (ESP-NOW, WiFi UDP, Serial KISS, etc.)
+      reticulumNode.getInterfaceManager().sendPacket(buffer, packet_len, dest_hash);
     } else {
       DebugSerial.println("ERROR: Failed to serialize packet!");
     }
