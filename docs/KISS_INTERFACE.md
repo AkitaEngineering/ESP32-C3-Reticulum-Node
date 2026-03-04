@@ -209,10 +209,27 @@ FOR each received byte:
 
 ### 8.3 Pin Configuration
 Platform-specific UART pin assignments:
-- **ESP32-C3**: RX=18, TX=19 (UART1)
+- **ESP32-C3**: RX=2, TX=4 (UART1) — GPIO18/19 reserved for USB D+/D-
 - **ESP32-S2**: RX=33, TX=34 (UART2)
 - **ESP32-S3**: RX=17, TX=18 (UART2)
 - **ESP32**: RX=16, TX=17 (UART2)
+
+### 8.4 KISS-over-USB CDC (ESP32-C3)
+When built with `-DKISS_OVER_USB=1`, the USB CDC port (`Serial`) carries KISS frames
+instead of debug output. Debug logging is redirected to UART1 (GPIO2 RX / GPIO4 TX).
+
+Key considerations:
+- **`Serial.begin()` is required.** The Arduino framework's auto-begin is disabled when
+  `ARDUINO_USB_MODE=1` is set. Without an explicit call, `HWCDC::begin()` never runs and
+  the USB device will not enumerate on the host.
+- **Host must write first.** The HWCDC `connected` flag starts `false`; the device discards
+  all `Serial.write()` output until the host sends at least one byte (triggering the
+  `OUT_RECV_PKT` interrupt).
+- **Physical RESET required after flash.** The ESP32-C3 USB Serial/JTAG auto-reset always
+  enters bootloader mode. Press the RESET button (not BOOT) to run application firmware.
+- **Avoid pyserial DTR/RTS.** Opening with default pyserial settings triggers DTR/RTS,
+  which resets the board into bootloader mode. Use raw file descriptors with `O_NOCTTY`
+  or set `dsrdtr=False, rtscts=False` and clear DTR/RTS immediately after opening.
 
 ---
 

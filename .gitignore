@@ -1,5 +1,39 @@
-.pio
+# PlatformIO
+.pio/
+
+# VS Code
 .vscode/.browse.c_cpp.db*
 .vscode/c_cpp_properties.json
 .vscode/launch.json
-.vscode/ipch
+.vscode/ipch/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# ESP-IDF generated configs (auto-generated, not hand-edited)
+sdkconfig
+sdkconfig.old
+sdkconfig.*
+
+# Build logs & captured output
+*.log
+build_*_log.txt
+tmp_capture/
+
+# Temp / scratch files
+.tmp/
+temp_blink/
+
+# Debug/capture scripts (machine-specific)
+.pio_*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Backup files
+*.orig
+*.bak
+*.original.*
