@@ -27,7 +27,7 @@ LinkManager::LinkPtr LinkManager::getOrCreateLink(const uint8_t* destination, bo
         return it->second;
     } else if (create && _activeLinks.size() < LINK_MAX_ACTIVE) {
         // Create new link if allowed and space available
-        DebugSerial.print("LinkManager: Creating new Link object for "); Utils::printBytes(destination, RNS_ADDRESS_SIZE, Serial); DebugSerial.println();
+        DebugSerial.print("LinkManager: Creating new Link object for "); Utils::printBytes(destination, RNS_ADDRESS_SIZE, DebugSerial); DebugSerial.println();
         try {
              // Use 'new (std::nothrow)' for slightly safer allocation check than make_shared exception
              // Link* rawPtr = new (std::nothrow) Link(destination, *this);
@@ -51,7 +51,7 @@ LinkManager::LinkPtr LinkManager::getOrCreateLink(const uint8_t* destination, bo
         }
     } else if (create) {
          DebugSerial.print("! WARN: Max active links ("); DebugSerial.print(LINK_MAX_ACTIVE); DebugSerial.print(") reached. Cannot create new link to ");
-         Utils::printBytes(destination, RNS_ADDRESS_SIZE, Serial); DebugSerial.println();
+         Utils::printBytes(destination, RNS_ADDRESS_SIZE, DebugSerial); DebugSerial.println();
     }
     return nullptr; // Not found and not created
 }
@@ -67,7 +67,7 @@ void LinkManager::processPacket(const RnsPacketInfo& packetInfo, InterfaceType i
     } else {
          // If it wasn't a LINK_REQ or we couldn't create a link (e.g., max links reached), ignore it.
          if (packetInfo.context != RNS_CONTEXT_LINK_REQ) {
-            DebugSerial.print("! LinkManager: Received non-REQ Link packet for unknown/uncreatable source: "); Utils::printBytes(packetInfo.source, RNS_ADDRESS_SIZE, Serial); DebugSerial.println();
+            DebugSerial.print("! LinkManager: Received non-REQ Link packet for unknown/uncreatable source: "); Utils::printBytes(packetInfo.source, RNS_ADDRESS_SIZE, DebugSerial); DebugSerial.println();
          }
     }
 }
@@ -120,10 +120,10 @@ void LinkManager::pruneInactiveLinks() {
      for (auto it = _activeLinks.begin(); it != _activeLinks.end(); /* manual increment */ ) {
          bool remove_it = false;
          if (!it->second->isActive()) { // Check if state is CLOSED
-              // DebugSerial.print("Pruning explicitly closed link: "); Utils::printBytes(it->first.data(), RNS_ADDRESS_SIZE, Serial); DebugSerial.println(); // Verbose
+              // DebugSerial.print("Pruning explicitly closed link: "); Utils::printBytes(it->first.data(), RNS_ADDRESS_SIZE, DebugSerial); DebugSerial.println(); // Verbose
               remove_it = true;
          } else if (now - it->second->getLastActivityTime() > LINK_INACTIVITY_TIMEOUT_MS) {
-              DebugSerial.print("! Link Inactivity timeout: "); Utils::printBytes(it->first.data(), RNS_ADDRESS_SIZE, Serial); DebugSerial.println();
+              DebugSerial.print("! Link Inactivity timeout: "); Utils::printBytes(it->first.data(), RNS_ADDRESS_SIZE, DebugSerial); DebugSerial.println();
               it->second->teardown(); // Set state to CLOSED, doesn't remove from map directly
               remove_it = true; // Mark for removal
          }
@@ -145,12 +145,12 @@ void LinkManager::removeLink(const uint8_t* destination) {
 
      auto it = _activeLinks.find(destArray);
      if (it != _activeLinks.end()) {
-          DebugSerial.print("LinkManager removing link: "); Utils::printBytes(destination, RNS_ADDRESS_SIZE, Serial); DebugSerial.println();
+          DebugSerial.print("LinkManager removing link: "); Utils::printBytes(destination, RNS_ADDRESS_SIZE, DebugSerial); DebugSerial.println();
           // Set state to closed just in case before erasing
           it->second->teardown(); // Ensure state is CLOSED
           _activeLinks.erase(it);
      } else {
-         // DebugSerial.print("LinkManager removeLink: Link not found for "); Utils::printBytes(destination, RNS_ADDRESS_SIZE, Serial); DebugSerial.println(); // Verbose
+         // DebugSerial.print("LinkManager removeLink: Link not found for "); Utils::printBytes(destination, RNS_ADDRESS_SIZE, DebugSerial); DebugSerial.println(); // Verbose
      }
 }
 

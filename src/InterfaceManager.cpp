@@ -132,8 +132,8 @@ void InterfaceManager::loop() {
 }
 
 void InterfaceManager::setupSerial() {
-    // KissSerial (Serial2) is started in main.cpp for KISS interface
-    LOG_INFO("IF: KISS Serial interface ready on Serial2 (GPIO16/17).");
+    // KissSerial is started in main.cpp for KISS interface
+    LOG_INFO("IF: KISS Serial interface ready (RX=%d, TX=%d, baud=%d).", KISS_UART_RX, KISS_UART_TX, KISS_SERIAL_SPEED);
 }
 
 void InterfaceManager::setupWiFi() {
@@ -304,7 +304,7 @@ void InterfaceManager::sendPacket(const uint8_t *packetBuffer, size_t packetLen,
         }
     } else {
         // No route, broadcast on primary interfaces (excluding source)
-        // DebugSerial.print("Broadcasting packet (no route found) for dest: "); Utils::printBytes(destinationAddr, RNS_ADDRESS_SIZE, Serial); DebugSerial.println(); // Verbose
+        // DebugSerial.print("Broadcasting packet (no route found) for dest: "); Utils::printBytes(destinationAddr, RNS_ADDRESS_SIZE, DebugSerial); DebugSerial.println(); // Verbose
         if (excludeInterface != InterfaceType::ESP_NOW) {
             sendPacketViaEspNow(packetBuffer, packetLen, nullptr); // Broadcast = null dest for internal func
         }
@@ -542,7 +542,7 @@ void InterfaceManager::staticEspNowRecvCallback(const uint8_t *mac_addr, const u
 void InterfaceManager::staticEspNowSendCallback(const uint8_t *mac_addr, esp_now_send_status_t status) {
     if (_instance && mac_addr) {
         // Could notify routing table or link manager about send status
-        // DebugSerial.print("IF: ESP-NOW Send Status to MAC "); Utils::printBytes(mac_addr, 6, Serial); DebugSerial.print(": "); DebugSerial.println(status == ESP_NOW_SEND_SUCCESS ? "Success" : "Fail");
+        // DebugSerial.print("IF: ESP-NOW Send Status to MAC "); Utils::printBytes(mac_addr, 6, DebugSerial); DebugSerial.print(": "); DebugSerial.println(status == ESP_NOW_SEND_SUCCESS ? "Success" : "Fail");
     }
 }
 */
@@ -856,9 +856,10 @@ void InterfaceManager::sendAPRSPosition(float lat, float lon, float altitude, co
     String info = "!";               // Position report
     info += String(latStr);
     info += (lat >= 0) ? "N" : "S";
-    info += String(APRS_SYMBOL);
+    info += "/";                       // Symbol table (primary table)
     info += String(lonStr);
     info += (lon >= 0) ? "E" : "W";
+    info += String(APRS_SYMBOL);       // Symbol character
     if (altitude > 0) {
         info += "/A=";
         info += String((int)(altitude * 3.28084)); // meters to feet
@@ -883,25 +884,25 @@ void InterfaceManager::sendAPRSWeather(float temp, float humidity, float pressur
         return;
     }
 
-    // Format: _DDHHMMc...s...g...t...r...p...P...h..b...
+    // APRS weather format: _DDHHMMcDDDsDDDgDDDtXXXrXXXpXXXPXXXhXXbXXXXX
     String info = "_" + buildAprsWeatherTimestamp();
-    info += "000"; // wind dir
-    info += "000"; // wind speed
-    info += "000"; // gust speed
+    info += "c000"; // wind direction (degrees)
+    info += "s000"; // wind speed (mph)
+    info += "g000"; // gust speed (mph)
 
     int tempF = (int)(temp * 9.0 / 5.0 + 32.0);
-    info += (tempF < 0) ? "/" : "c";
-    char tempStr[4]; snprintf(tempStr, sizeof(tempStr), "%03d", abs(tempF));
+    char tempStr[5]; snprintf(tempStr, sizeof(tempStr), "t%03d", abs(tempF));
+    if (tempF < 0) tempStr[1] = '-'; // negative temps: t-XX
     info += String(tempStr);
 
-    info += "000"; // rain 1h
-    info += "000"; // rain 24h
-    info += "000"; // rain since midnight
+    info += "r000"; // rain 1h (hundredths of inch)
+    info += "p000"; // rain 24h (hundredths of inch)
+    info += "P000"; // rain since midnight (hundredths of inch)
 
-    char humStr[3]; snprintf(humStr, sizeof(humStr), "%02d", (int)humidity);
+    char humStr[4]; snprintf(humStr, sizeof(humStr), "h%02d", (int)humidity);
     info += String(humStr);
 
-    char pressStr[6]; snprintf(pressStr, sizeof(pressStr), "%05d", (int)(pressure * 10));
+    char pressStr[7]; snprintf(pressStr, sizeof(pressStr), "b%05d", (int)(pressure * 10));
     info += String(pressStr);
 
     if (comment && strlen(comment) > 0) {

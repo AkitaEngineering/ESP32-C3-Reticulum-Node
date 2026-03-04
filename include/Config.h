@@ -6,6 +6,12 @@
 #include <vector>
 #include <array> // For group addresses
 
+// --- LED Configuration ---
+// Provide a fallback for boards that don't define LED_BUILTIN
+#ifndef LED_BUILTIN
+#define LED_BUILTIN 2  // Common default for many ESP32 boards
+#endif
+
 // --- Debug and Interface Configuration ---
 // Serial port selection can be swapped at compile time. By default
 // the USB/UART0 port (Serial) is used for debug and a hardware UART

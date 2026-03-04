@@ -24,7 +24,7 @@ Link::Link(const uint8_t* destination, LinkManager& owner) :
 }
 
 Link::~Link() {
-    // DebugSerial.print("Link destructor: "); Utils::printBytes(_destinationAddress.data(), RNS_ADDRESS_SIZE, Serial); DebugSerial.println();
+    // DebugSerial.print("Link destructor: "); Utils::printBytes(_destinationAddress.data(), RNS_ADDRESS_SIZE, DebugSerial); DebugSerial.println();
 }
 
 // Public method to initiate link establishment
@@ -35,7 +35,7 @@ bool Link::establish() {
         DebugSerial.println("Link::establish called but state not CLOSED.");
         return false;
     }
-    DebugSerial.print("Link::establish to "); Utils::printBytes(_destinationAddress.data(), RNS_ADDRESS_SIZE, Serial); DebugSerial.println();
+    DebugSerial.print("Link::establish to "); Utils::printBytes(_destinationAddress.data(), RNS_ADDRESS_SIZE, DebugSerial); DebugSerial.println();
     sendLinkRequest(); // Send the actual request packet
     // Return value indicates if sending was attempted, not if established yet
     return (_state == LinkState::PENDING_REQ); // Should be PENDING_REQ if sendLinkRequest succeeded
@@ -203,7 +203,7 @@ void Link::handlePacket(const RnsPacketInfo& packetInfo) {
 // Handle incoming LINK_REQ packet
 void Link::processLinkRequest(const RnsPacketInfo& reqPacket) {
      // Can be received in CLOSED or ESTABLISHED state
-     DebugSerial.print("Link::processLinkRequest from "); Utils::printBytes(reqPacket.source, RNS_ADDRESS_SIZE, Serial); DebugSerial.println();
+     DebugSerial.print("Link::processLinkRequest from "); Utils::printBytes(reqPacket.source, RNS_ADDRESS_SIZE, DebugSerial); DebugSerial.println();
      sendAck(0); // ACK the control packet (seq 0)
 
      // Transition to ESTABLISHED
@@ -397,7 +397,7 @@ void Link::retransmitOldestPending() {
 void Link::close(bool notifyPeer) {
      if (_state == LinkState::CLOSED) return; // Already closed
 
-     DebugSerial.print("Link::close requested for "); Utils::printBytes(_destinationAddress.data(), RNS_ADDRESS_SIZE, Serial); DebugSerial.println();
+     DebugSerial.print("Link::close requested for "); Utils::printBytes(_destinationAddress.data(), RNS_ADDRESS_SIZE, DebugSerial); DebugSerial.println();
      // Clear any pending packets immediately when close is initiated
      clearPendingQueue();
 
@@ -430,7 +430,7 @@ void Link::sendLinkClose() {
 
 // Handle incoming LINK_CLOSE packet from peer
 void Link::processLinkClose(const RnsPacketInfo& closePacket) {
-    DebugSerial.print("Link::processLinkClose received from: "); Utils::printBytes(closePacket.source, RNS_ADDRESS_SIZE, Serial); DebugSerial.println();
+    DebugSerial.print("Link::processLinkClose received from: "); Utils::printBytes(closePacket.source, RNS_ADDRESS_SIZE, DebugSerial); DebugSerial.println();
     sendAck(0); // ACK the close request (seq 0)
     _state = LinkState::CLOSED; // Transition to closed state immediately
     clearPendingQueue();
@@ -442,7 +442,7 @@ void Link::processLinkClose(const RnsPacketInfo& closePacket) {
 // Does NOT notify the peer.
 bool Link::teardown() {
     if (_state == LinkState::CLOSED) return false;
-    DebugSerial.print("! Link::teardown invoked for "); Utils::printBytes(_destinationAddress.data(), RNS_ADDRESS_SIZE, Serial); DebugSerial.println();
+    DebugSerial.print("! Link::teardown invoked for "); Utils::printBytes(_destinationAddress.data(), RNS_ADDRESS_SIZE, DebugSerial); DebugSerial.println();
     _state = LinkState::CLOSED; // Set state directly
     clearPendingQueue();
     // DO NOT call removeLink here - let the owner (LinkManager) manage removal

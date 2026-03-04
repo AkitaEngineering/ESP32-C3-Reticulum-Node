@@ -78,7 +78,7 @@ private:
     uint32_t _txSampleIndex;
     
     // Receive state
-    std::vector<int16_t> _rxBuffer;
+    std::vector<uint8_t> _rxBuffer;  // HDLC decoded frame bytes
     size_t _rxBufferIndex;
     uint32_t _rxSampleIndex;
     bool _rxBitState;

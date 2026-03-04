@@ -53,7 +53,7 @@ void RoutingTable::update(const RnsPacketInfo &announcePacket, InterfaceType int
     // If not found, add new route if space allows
     if (!found) {
         if (_routes.size() < MAX_ROUTES) {
-            // DebugSerial.print("RT: Adding new route for "); Utils::printBytes(announcePacket.source, RNS_ADDRESS_SIZE, Serial); // Verbose
+            // DebugSerial.print("RT: Adding new route for "); Utils::printBytes(announcePacket.source, RNS_ADDRESS_SIZE, DebugSerial); // Verbose
             RouteEntry newEntry;
             memcpy(newEntry.destination_addr, announcePacket.source, RNS_ADDRESS_SIZE);
             newEntry.last_heard_time = now;
@@ -80,7 +80,7 @@ void RoutingTable::update(const RnsPacketInfo &announcePacket, InterfaceType int
                 });
 
               if (oldest_it != _routes.end()) {
-                 DebugSerial.print("! RT Full. Replacing oldest route to "); Utils::printBytes(oldest_it->destination_addr, RNS_ADDRESS_SIZE, Serial); DebugSerial.println();
+                 DebugSerial.print("! RT Full. Replacing oldest route to "); Utils::printBytes(oldest_it->destination_addr, RNS_ADDRESS_SIZE, DebugSerial); DebugSerial.println();
                   // If replacing an ESP-NOW route, remove the old peer to avoid stale entries.
                   if (ifManager && oldest_it->interface == InterfaceType::ESP_NOW) {
                      ifManager->removeEspNowPeer(oldest_it->next_hop_mac);
@@ -117,7 +117,7 @@ void RoutingTable::prune(InterfaceManager* ifManager) {
         //bool changed = false; // unused in current logic, kept for potential future logging
         for (auto it = _routes.begin(); it != _routes.end(); /* manual increment */ ) {
             if (now - it->last_heard_time > ROUTE_TIMEOUT_MS) {
-                 DebugSerial.print("RT: Route timed out for "); Utils::printBytes(it->destination_addr, RNS_ADDRESS_SIZE, Serial); DebugSerial.println();
+                 DebugSerial.print("RT: Route timed out for "); Utils::printBytes(it->destination_addr, RNS_ADDRESS_SIZE, DebugSerial); DebugSerial.println();
                  // If it was an ESP-NOW route, remove the peer via InterfaceManager
                  if (ifManager && it->interface == InterfaceType::ESP_NOW) {
                       ifManager->removeEspNowPeer(it->next_hop_mac);
@@ -139,10 +139,10 @@ void RoutingTable::print() {
     int i = 0;
     unsigned long now = millis();
     for (const auto& entry : _routes) {
-        DebugSerial.print(i++); DebugSerial.print(": Dst="); Utils::printBytes(entry.destination_addr, RNS_ADDRESS_SIZE, Serial);
+        DebugSerial.print(i++); DebugSerial.print(": Dst="); Utils::printBytes(entry.destination_addr, RNS_ADDRESS_SIZE, DebugSerial);
         DebugSerial.print(" If="); DebugSerial.print(static_cast<int>(entry.interface));
         DebugSerial.print(" Hops="); DebugSerial.print(entry.hops);
-        if (entry.interface == InterfaceType::ESP_NOW) { DebugSerial.print(" MAC="); Utils::printBytes(entry.next_hop_mac, 6, Serial); }
+        if (entry.interface == InterfaceType::ESP_NOW) { DebugSerial.print(" MAC="); Utils::printBytes(entry.next_hop_mac, 6, DebugSerial); }
         else if (entry.interface == InterfaceType::WIFI_UDP) { DebugSerial.print(" IP="); DebugSerial.print(entry.next_hop_ip); }
         DebugSerial.print(" Age="); DebugSerial.print((now - entry.last_heard_time) / 1000); DebugSerial.println("s");
     }

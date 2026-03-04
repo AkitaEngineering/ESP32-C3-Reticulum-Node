@@ -399,7 +399,7 @@ void ReticulumNode::processPacketForSelf(const RnsPacketInfo& packetInfo, Interf
             }
 
             if (!handled) {
-                DebugSerial.print("> CMD: Send Reliable to "); Utils::printBytes(targetDest, RNS_ADDRESS_SIZE, Serial);
+                DebugSerial.print("> CMD: Send Reliable to "); Utils::printBytes(targetDest, RNS_ADDRESS_SIZE, DebugSerial);
                 DebugSerial.print(" DataLen="); DebugSerial.println(actualPayload.size());
 
                 // Initiate reliable send via LinkManager
@@ -416,8 +416,8 @@ void ReticulumNode::processPacketForSelf(const RnsPacketInfo& packetInfo, Interf
 
     // --- Standard Unreliable Packet Processing for Self ---
     // (e.g., pings, service discovery, non-link application data)
-    DebugSerial.print("> Self Packet! Dst="); Utils::printBytes(packetInfo.destination, RNS_ADDRESS_SIZE, Serial);
-    DebugSerial.print(" Src="); Utils::printBytes(packetInfo.source, RNS_ADDRESS_SIZE, Serial);
+    DebugSerial.print("> Self Packet! Dst="); Utils::printBytes(packetInfo.destination, RNS_ADDRESS_SIZE, DebugSerial);
+    DebugSerial.print(" Src="); Utils::printBytes(packetInfo.source, RNS_ADDRESS_SIZE, DebugSerial);
     DebugSerial.print(" If="); DebugSerial.print(static_cast<int>(interface));
     DebugSerial.print(" Ctx="); DebugSerial.print(packetInfo.context, HEX);
     DebugSerial.print(" Payload: [");
@@ -526,7 +526,7 @@ void ReticulumNode::setAppDataHandler(AppDataHandler handler) {
 // Called by LinkManager when reliable data arrives
 void ReticulumNode::processAppData(const uint8_t* source_address, const std::vector<uint8_t>& data) {
     // This is where received Link data ends up
-    DebugSerial.print(">> App Data Received! Src: "); Utils::printBytes(source_address, RNS_ADDRESS_SIZE, Serial);
+    DebugSerial.print(">> App Data Received! Src: "); Utils::printBytes(source_address, RNS_ADDRESS_SIZE, DebugSerial);
     DebugSerial.print(" Len: "); DebugSerial.print(data.size()); DebugSerial.println();
 
     if (_appDataHandler) {

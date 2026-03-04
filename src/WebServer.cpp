@@ -10,6 +10,7 @@
 #include <ArduinoJson.h>
 #include <Update.h>
 #include <monocypher.h>
+#include <optional/monocypher-ed25519.h>
 
 extern ReticulumNode reticulumNode;
 
@@ -284,7 +285,7 @@ void processHttpClient(WiFiClient &client) {
         vf.read(buf, len);
         vf.close();
 
-        int ok = crypto_ed25519_verify(sig, buf, len, pub);
+        int ok = crypto_ed25519_check(sig, pub, buf, len);
         if (ok != 0) { free(buf); SPIFFS.remove(tmpPath); sendResponse(client, 403, "text/plain", "Invalid signature"); return; }
 
         // Apply OTA from temp file

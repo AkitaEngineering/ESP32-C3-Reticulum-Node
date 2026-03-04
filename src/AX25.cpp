@@ -152,7 +152,7 @@ bool AX25::decodeFrame(const uint8_t* data, size_t len, Frame& frame) {
     
     // Information field
     frame.info.clear();
-    while (offset + 2 < len) {  // Leave room for FCS
+    while (offset + 3 < len) {  // Leave room for FCS (2 bytes) + closing flag (1 byte)
         frame.info.push_back(data[offset++]);
     }
     
