@@ -43,6 +43,21 @@ void setup()
 
   // Initialize Serial (USB/UART0) for debug output
   DebugSerial.begin(115200);
+
+#if defined(KISS_OVER_USB)
+  // When KISS_OVER_USB is active, KissSerial == Serial (USB CDC).
+  // The build flags include ARDUINO_USB_MODE=1 which DISABLES the
+  // auto-Serial.begin() in the Arduino framework's app_main()
+  // (guarded by !ARDUINO_USB_MODE).  We MUST call Serial.begin()
+  // explicitly so HWCDC::begin() runs — it creates the TX/RX ring
+  // buffers, enables the USB D+ pullup, and allocates the ISR.
+  // Without this call the USB device never enumerates on the host.
+  Serial.begin();            // baud rate is ignored for HWCDC
+#else
+  // Start KISS serial on hardware UART (not USB)
+  KissSerial.begin(KISS_SERIAL_SPEED, SERIAL_8N1, KISS_UART_RX, KISS_UART_TX);
+#endif
+
   // wait up to 10 seconds for USB CDC to enumerate; blink LED while waiting
   unsigned long start = millis();
   while (!Serial && millis() - start < 10000) {
@@ -64,15 +79,6 @@ void setup()
     // the blink indicator and PID change instead.  If enumeration fails the
     // LED will remain off and the host should be unplugged/re-plugged.
   }
-
-  // Start KISS serial interface (platform-specific UART)
-#if defined(KISS_OVER_USB)
-  // KISS_OVER_USB aliases KissSerial to the USB CDC port which only
-  // accepts a baud-rate argument (HWCDC::begin(unsigned long)).
-  KissSerial.begin(KISS_SERIAL_SPEED);
-#else
-  KissSerial.begin(KISS_SERIAL_SPEED, SERIAL_8N1, KISS_UART_RX, KISS_UART_TX);
-#endif
 
   DebugSerial.println("\n\n===================================");
   DebugSerial.println(" ESP32 Reticulum Gateway - Booting ");
