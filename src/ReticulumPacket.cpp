@@ -48,6 +48,21 @@ bool deserialize(const uint8_t *buffer, size_t len, RnsPacketInfo &info) {
         info.payload.assign(info.data.begin() + RNS_ADDRESS_SIZE, info.data.end());
     }
 
+    // For link-context packets, source/packet_id/sequence_number are encoded in the payload
+    // Format: [SOURCE 8] [PACKET_ID 2] [SEQ_NUM 2] [APP_DATA...]
+    const size_t LINK_META_SIZE = RNS_ADDRESS_SIZE + 2 + 2; // 12 bytes
+    if ((info.context == RNS_CONTEXT_LINK_REQ  || info.context == RNS_CONTEXT_LINK_DATA ||
+         info.context == RNS_CONTEXT_ACK       || info.context == RNS_CONTEXT_LINK_CLOSE) &&
+        info.data.size() >= LINK_META_SIZE)
+    {
+        memcpy(info.source, info.data.data(), RNS_ADDRESS_SIZE);
+        info.packet_id       = ((uint16_t)info.data[RNS_ADDRESS_SIZE]     << 8) | info.data[RNS_ADDRESS_SIZE + 1];
+        info.sequence_number = ((uint16_t)info.data[RNS_ADDRESS_SIZE + 2] << 8) | info.data[RNS_ADDRESS_SIZE + 3];
+        // Strip link metadata; remaining bytes are the actual application data
+        info.data.assign(info.data.begin() + LINK_META_SIZE, info.data.end());
+        info.payload = info.data;
+    }
+
     info.packet_len = len;
     info.valid = true;
 

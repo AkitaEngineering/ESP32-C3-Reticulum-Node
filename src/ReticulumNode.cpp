@@ -306,7 +306,7 @@ void ReticulumNode::handleReceivedPacket(const uint8_t *packetBuffer, size_t pac
     if (packetInfo.context == RNS_CONTEXT_LINK_REQ ||
         packetInfo.context == RNS_CONTEXT_LINK_CLOSE ||
         packetInfo.context == RNS_CONTEXT_LINK_DATA ||
-        (packetInfo.header_type == RNS_HEADER_TYPE_ACK && packetInfo.context == RNS_CONTEXT_ACK) )
+        packetInfo.context == RNS_CONTEXT_ACK)
     {
         // DebugSerial.println("Node: Passing packet to Link Manager."); // Verbose
         _linkManager.processPacket(packetInfo, interface);

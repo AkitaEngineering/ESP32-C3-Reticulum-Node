@@ -41,21 +41,41 @@ bool Link::establish() {
     return (_state == LinkState::PENDING_REQ); // Should be PENDING_REQ if sendLinkRequest succeeded
 }
 
+// Helper: build link-layer payload prefix [SOURCE 8][PACKET_ID 2][SEQ_NUM 2][APP_DATA...]
+static std::vector<uint8_t> buildLinkPayload(const uint8_t* source, uint16_t packet_id,
+                                              uint16_t seq, const std::vector<uint8_t>& app = {}) {
+    std::vector<uint8_t> p;
+    p.reserve(RNS_ADDRESS_SIZE + 4 + app.size());
+    p.insert(p.end(), source, source + RNS_ADDRESS_SIZE);
+    p.push_back((packet_id >> 8) & 0xFF);
+    p.push_back(packet_id & 0xFF);
+    p.push_back((seq >> 8) & 0xFF);
+    p.push_back(seq & 0xFF);
+    if (!app.empty()) p.insert(p.end(), app.begin(), app.end());
+    return p;
+}
+
+// Helper: pad 8-byte address into 16-byte destination hash
+static void padDestHash(const uint8_t* addr8, uint8_t* hash16) {
+    memset(hash16, 0, RNS_TRUNCATED_HASHLENGTH_BYTES);
+    memcpy(hash16, addr8, RNS_ADDRESS_SIZE);
+}
+
 // Internal: Sends the LINK_REQ packet
 void Link::sendLinkRequest() {
     // State should be CLOSED before calling, set PENDING now
     _state = LinkState::PENDING_REQ;
     _linkReqPacketId = _ownerRef.getNextPacketId();
 
-    uint8_t buffer[RNS_MIN_HEADER_SIZE]; // Control packets have no payload usually
+    auto linkData = buildLinkPayload(_ownerRef.getNodeAddress(), _linkReqPacketId, 0);
+    uint8_t destHash[RNS_TRUNCATED_HASHLENGTH_BYTES];
+    padDestHash(_destinationAddress.data(), destHash);
+
+    uint8_t buffer[MAX_PACKET_SIZE];
     size_t len = 0;
-    // Link Request uses DATA type, specific context
-    bool ok = ReticulumPacket::serialize_control(buffer, len,
-        _destinationAddress.data(), _ownerRef.getNodeAddress(),
-        RNS_HEADER_TYPE_DATA,
-        RNS_CONTEXT_LINK_REQ,
-        _linkReqPacketId,
-        0); // No sequence number needed in REQ payload
+    bool ok = ReticulumPacket::serialize(buffer, len,
+        destHash, RNS_PACKET_DATA, RNS_DEST_LINK,
+        RNS_PROPAGATION_BROADCAST, RNS_CONTEXT_LINK_REQ, 0, linkData);
 
     if (ok) {
         _ownerRef.sendPacketRaw(buffer, len, _destinationAddress.data());
@@ -88,8 +108,6 @@ bool Link::sendData(const std::vector<uint8_t>& dataPayload) {
     // Prepare packet info
     RnsPacketInfo packetInfo;
     packetInfo.context = RNS_CONTEXT_LINK_DATA;
-    // Data requires ACK
-    packetInfo.header_type = RNS_HEADER_TYPE_DATA | RNS_HEADER_FLAG_REQUEST_ACK_MASK;
     memcpy(packetInfo.destination, _destinationAddress.data(), RNS_ADDRESS_SIZE);
     packetInfo.data = dataPayload; // Store actual data payload
     packetInfo.sequence_number = _outgoingSequence; // Use current sequence number
@@ -116,14 +134,18 @@ void Link::sendPacketInternal(const RnsPacketInfo& packetInfo) {
     pending.lastSentTime = pending.firstSentTime;
     // pending.retryCount = 0; // Retry count is tracked by _currentRetryCount
 
+    // Build link payload: [SOURCE 8][PACKET_ID 2][SEQ_NUM 2][APP_DATA...]
+    auto linkData = buildLinkPayload(_ownerRef.getNodeAddress(),
+        pending.packetInfo.packet_id, pending.packetInfo.sequence_number,
+        pending.packetInfo.data);
+    uint8_t destHash[RNS_TRUNCATED_HASHLENGTH_BYTES];
+    padDestHash(pending.packetInfo.destination, destHash);
+
     uint8_t buffer[MAX_PACKET_SIZE];
     size_t len = 0;
     bool ok = ReticulumPacket::serialize(buffer, len,
-        pending.packetInfo.destination, _ownerRef.getNodeAddress(),
-        RNS_DST_TYPE_SINGLE, pending.packetInfo.header_type, pending.packetInfo.context,
-        pending.packetInfo.packet_id, 0, // Hops = 0 initially
-        pending.packetInfo.data,          // Pass actual data
-        pending.packetInfo.sequence_number); // Pass sequence number
+        destHash, RNS_PACKET_DATA, RNS_DEST_LINK,
+        RNS_PROPAGATION_BROADCAST, pending.packetInfo.context, 0, linkData);
 
     if (ok) {
         _pendingOutgoingPackets.push_back(pending);
@@ -148,8 +170,8 @@ void Link::handlePacket(const RnsPacketInfo& packetInfo) {
     updateActivity(); // Mark link as active
 
     // --- Handle ACKs ---
-    // ACKs have specific header type and context
-    if (packetInfo.header_type == RNS_HEADER_TYPE_ACK && packetInfo.context == RNS_CONTEXT_ACK) {
+    // ACKs identified by context (official format does not encode legacy header_type)
+    if (packetInfo.context == RNS_CONTEXT_ACK) {
         processAck(packetInfo);
         return; // ACK processing is terminal for this packet
     }
@@ -300,15 +322,15 @@ void Link::processData(const RnsPacketInfo& dataPacket) {
 // Internal: Send ACK packet
 void Link::sendAck(uint16_t sequenceToAck) {
      uint16_t ackPacketId = _ownerRef.getNextPacketId();
-     uint8_t buffer[RNS_MIN_HEADER_SIZE + RNS_SEQ_SIZE]; // ACK payload is just the sequence number
+     auto linkData = buildLinkPayload(_ownerRef.getNodeAddress(), ackPacketId, sequenceToAck);
+     uint8_t destHash[RNS_TRUNCATED_HASHLENGTH_BYTES];
+     padDestHash(_destinationAddress.data(), destHash);
+
+     uint8_t buffer[MAX_PACKET_SIZE];
      size_t len = 0;
-     // ACK uses ACK header type, ACK context
-     bool ok = ReticulumPacket::serialize_control(buffer, len,
-        _destinationAddress.data(), _ownerRef.getNodeAddress(),
-        RNS_HEADER_TYPE_ACK,
-        RNS_CONTEXT_ACK,
-        ackPacketId,
-        sequenceToAck); // Sequence being ACKed goes in payload
+     bool ok = ReticulumPacket::serialize(buffer, len,
+        destHash, RNS_PACKET_DATA, RNS_DEST_LINK,
+        RNS_PROPAGATION_BROADCAST, RNS_CONTEXT_ACK, 0, linkData);
 
       if (ok) {
          // DebugSerial.print("Link Sending ACK for seq: "); DebugSerial.println(sequenceToAck); // Verbose
@@ -373,15 +395,18 @@ void Link::retransmitOldestPending() {
      DebugSerial.print("Link Retransmitting seq "); DebugSerial.print(pending.packetInfo.sequence_number);
      DebugSerial.print(" ID "); DebugSerial.print(pending.packetInfo.packet_id); DebugSerial.print(" (Retry "); DebugSerial.print(_currentRetryCount); DebugSerial.println(")");
 
+     // Build link payload with current packet_id (may have been refreshed for retry)
+     auto linkData = buildLinkPayload(_ownerRef.getNodeAddress(),
+         pending.packetInfo.packet_id, pending.packetInfo.sequence_number,
+         pending.packetInfo.data);
+     uint8_t destHash[RNS_TRUNCATED_HASHLENGTH_BYTES];
+     padDestHash(pending.packetInfo.destination, destHash);
+
      uint8_t buffer[MAX_PACKET_SIZE];
      size_t len = 0;
-     // Serialize using the info stored in the pending packet
-      bool ok = ReticulumPacket::serialize(buffer, len,
-        pending.packetInfo.destination, _ownerRef.getNodeAddress(),
-        RNS_DST_TYPE_SINGLE, pending.packetInfo.header_type, pending.packetInfo.context,
-        pending.packetInfo.packet_id, 0, // Hops = 0
-        pending.packetInfo.data,
-        pending.packetInfo.sequence_number);
+     bool ok = ReticulumPacket::serialize(buffer, len,
+         destHash, RNS_PACKET_DATA, RNS_DEST_LINK,
+         RNS_PROPAGATION_BROADCAST, pending.packetInfo.context, 0, linkData);
 
       if (ok) {
          _ownerRef.sendPacketRaw(buffer, len, pending.packetInfo.destination);
@@ -417,13 +442,15 @@ void Link::close(bool notifyPeer) {
 // Internal: Send the LINK_CLOSE packet
 void Link::sendLinkClose() {
      uint16_t closePacketId = _ownerRef.getNextPacketId();
-     uint8_t buffer[RNS_MIN_HEADER_SIZE]; // No payload
+     auto linkData = buildLinkPayload(_ownerRef.getNodeAddress(), closePacketId, 0);
+     uint8_t destHash[RNS_TRUNCATED_HASHLENGTH_BYTES];
+     padDestHash(_destinationAddress.data(), destHash);
+
+     uint8_t buffer[MAX_PACKET_SIZE];
      size_t len = 0;
-     bool ok = ReticulumPacket::serialize_control(buffer, len,
-        _destinationAddress.data(), _ownerRef.getNodeAddress(),
-        RNS_HEADER_TYPE_DATA, // Close uses DATA type
-        RNS_CONTEXT_LINK_CLOSE,
-        closePacketId, 0); // Sequence 0 for control
+     bool ok = ReticulumPacket::serialize(buffer, len,
+        destHash, RNS_PACKET_DATA, RNS_DEST_LINK,
+        RNS_PROPAGATION_BROADCAST, RNS_CONTEXT_LINK_CLOSE, 0, linkData);
       if (ok) { _ownerRef.sendPacketRaw(buffer, len, _destinationAddress.data()); }
       else { DebugSerial.println("! ERROR: Link::sendLinkClose serialize failed!"); }
 }
