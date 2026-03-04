@@ -44,7 +44,14 @@ class DebugSerialShim : public Stream {
 public:
     void begin(unsigned long baud) {
         // initialize whichever serial port is configured for debugging
+#if defined(KISS_OVER_USB) && defined(DEBUG_UART_RX) && (DEBUG_UART_RX >= 0)
+        // When KISS owns the USB CDC port, debug goes to a hardware UART.
+        // We MUST supply explicit pin numbers to avoid clobbering the USB
+        // D+/D− GPIOs (the default UART1 pins on ESP32-C3 are 18/19).
+        DEBUG_PORT.begin(baud, SERIAL_8N1, DEBUG_UART_RX, DEBUG_UART_TX);
+#else
         DEBUG_PORT.begin(baud);
+#endif
     }
 
     int available() override { return DEBUG_ENABLED ? DEBUG_PORT.available() : 0; }
@@ -71,6 +78,20 @@ extern DebugSerialShim DebugSerial; // Use USB/UART0 for debug (Arduino Serial M
     // RX/TX pin defines are unused when using USB, but define them anyway
     #define KISS_UART_RX 0
     #define KISS_UART_TX 0
+
+    // When debug output is redirected to Serial1 (hardware UART), we MUST
+    // specify safe pins.  On the ESP32-C3 the default UART1 pins are
+    // GPIO18/19 – the same as the USB D+/D− lines.  Initializing UART1
+    // on those pins would immediately kill the USB CDC connection that KISS
+    // needs.  Use GPIO2 (RX) and GPIO4 (TX) instead.
+    #if defined(CONFIG_IDF_TARGET_ESP32C3)
+        #define DEBUG_UART_RX 2
+        #define DEBUG_UART_TX 4
+    #else
+        // Other targets: use reasonable defaults (can be overridden)
+        #define DEBUG_UART_RX -1
+        #define DEBUG_UART_TX -1
+    #endif
 
 #elif defined(CONFIG_IDF_TARGET_ESP32C3) || defined(CONFIG_IDF_TARGET_ESP32C5) || defined(CONFIG_IDF_TARGET_ESP32C6)
     #define KissSerial Serial1    // Use UART1 for KISS

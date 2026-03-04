@@ -530,8 +530,8 @@ void InterfaceManager::printEspNowPeers() {
 void InterfaceManager::staticEspNowRecvCallback(const uint8_t *mac_addr, const uint8_t *incomingData, int len) {
     if (_instance && _instance->_packetReceiver && mac_addr && incomingData && len > 0) {
         if (len <= MAX_PACKET_SIZE) {
-             // DebugSerial.print("[ESP-NOW RX] "); DebugSerial.print(len); DebugSerial.print("B from ");
-             // Utils::printBytes(mac_addr, 6, DebugSerial); DebugSerial.println();
+             DebugSerial.print("[ESP-NOW RX] "); DebugSerial.print(len); DebugSerial.print("B from ");
+             Utils::printBytes(mac_addr, 6, DebugSerial); DebugSerial.println();
              // Pass to instance's packet receiver callback
             _instance->_packetReceiver(incomingData, (size_t)len, InterfaceType::ESP_NOW, mac_addr, IPAddress(), 0);
         } else {

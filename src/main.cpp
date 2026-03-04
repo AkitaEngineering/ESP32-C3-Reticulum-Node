@@ -66,7 +66,13 @@ void setup()
   }
 
   // Start KISS serial interface (platform-specific UART)
+#if defined(KISS_OVER_USB)
+  // KISS_OVER_USB aliases KissSerial to the USB CDC port which only
+  // accepts a baud-rate argument (HWCDC::begin(unsigned long)).
+  KissSerial.begin(KISS_SERIAL_SPEED);
+#else
   KissSerial.begin(KISS_SERIAL_SPEED, SERIAL_8N1, KISS_UART_RX, KISS_UART_TX);
+#endif
 
   DebugSerial.println("\n\n===================================");
   DebugSerial.println(" ESP32 Reticulum Gateway - Booting ");

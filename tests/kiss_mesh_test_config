@@ -1,0 +1,17 @@
+# Reticulum configuration for KISS mesh relay test
+# Board A (/dev/ttyACM0) is flashed with esp32-c3-kiss-usb firmware
+# This config tells Python RNS to send packets via KISS over USB to Board A
+
+[reticulum]
+  enable_transport = False
+  share_instance = No
+
+[interfaces]
+  [[KISS over USB to ESP32]]
+    type = KISSInterface
+    port = /dev/ttyACM0
+    speed = 115200
+    databits = 8
+    parity = none
+    stopbits = 1
+    flow_control = False
