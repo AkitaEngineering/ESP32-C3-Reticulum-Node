@@ -324,7 +324,7 @@ void ReticulumNode::handleReceivedPacket(const uint8_t *packetBuffer, size_t pac
 
     // --- 3. Data / Other Packet Handling (Check Destination) ---
     // Check destination: Single Address Match
-    if (packetInfo.destination_type == RNS_DST_TYPE_SINGLE &&
+    if (packetInfo.destination_type == RNS_DEST_SINGLE &&
         Utils::compareAddresses(packetInfo.destination, _nodeAddress))
     {
         DebugSerial.println("[Node] Packet addressed to self (single).");
@@ -333,7 +333,7 @@ void ReticulumNode::handleReceivedPacket(const uint8_t *packetBuffer, size_t pac
         return;
     }
     // Check destination: Group Address Match
-    else if (packetInfo.destination_type == RNS_DST_TYPE_GROUP)
+    else if (packetInfo.destination_type == RNS_DEST_GROUP)
     {
         for (const auto& group : _subscribedGroups) {
             if (Utils::compareAddresses(packetInfo.destination, group.data())) {

@@ -170,7 +170,7 @@ void Link::handlePacket(const RnsPacketInfo& packetInfo) {
     updateActivity(); // Mark link as active
 
     // --- Handle ACKs ---
-    // ACKs identified by context (official format does not encode legacy header_type)
+    // ACKs identified by context field
     if (packetInfo.context == RNS_CONTEXT_ACK) {
         processAck(packetInfo);
         return; // ACK processing is terminal for this packet

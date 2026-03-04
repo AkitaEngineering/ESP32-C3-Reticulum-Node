@@ -6,24 +6,6 @@
 #include <cstdint>
 #include <cstring> // For memcpy
 
-// --- Legacy Custom Format Defines (for Link Layer) ---
-// These are for the old custom packet format used by Link layer
-
-// Legacy Header Types (old format)
-#define RNS_HEADER_TYPE_DATA  0x00
-#define RNS_HEADER_TYPE_ACK   0x01
-#define RNS_HEADER_TYPE_ANN   0x02
-#define RNS_HEADER_TYPE_MASK  0x0F
-#define RNS_HEADER_FLAG_REQUEST_ACK_MASK  0x10
-
-// Legacy Destination Types (old format)
-#define RNS_DST_TYPE_SINGLE  0x00
-#define RNS_DST_TYPE_GROUP   0x01
-
-// Legacy size constants
-// Note: RNS_SEQ_SIZE is defined in Config.h
-const size_t RNS_MIN_HEADER_SIZE = 2 + 2 * RNS_ADDRESS_SIZE + 2;  // header_type + dest + src + packet_id
-
 // --- Reticulum Official Wire Format Defines ---
 // Based on official Reticulum source code
 
@@ -56,33 +38,31 @@ const size_t RNS_HEADER_2_SIZE = 2 + 16 + 16 + 1;  // flags + hops + transport_i
 const size_t MAX_PACKET_SIZE = RNS_HEADER_1_SIZE + RNS_MAX_PAYLOAD;
 
 
-// --- Decoded Packet Info Structure (Hybrid: supports both formats) ---
+// --- Decoded Packet Info Structure ---
 struct RnsPacketInfo {
-    // --- Official Reticulum Format Fields ---
     // Flags byte decomposed
     uint8_t flags = 0;
     uint8_t packet_type = 0;      // bits 0-1
-    uint8_t destination_type = 0;  // bits 2-3 (also used as legacy destination_type)
+    uint8_t destination_type = 0;  // bits 2-3
     uint8_t propagation_type = 0;  // bit 4
     bool context_flag = false;     // bit 5
-    uint8_t header_type = 0;       // bit 6 (also used as legacy header_type)
+    uint8_t header_type = 0;       // bit 6 (RNS_HEADER_1 or RNS_HEADER_2)
     bool ifac_flag = false;        // bit 7
 
     uint8_t hops = 0;
     uint8_t destination_hash[RNS_TRUNCATED_HASHLENGTH_BYTES] = {0};  // 16 bytes
     uint8_t context = RNS_CONTEXT_NONE;
 
-    std::vector<uint8_t> data;    // Actual data payload (official format)
+    std::vector<uint8_t> data;    // Data payload
     size_t packet_len = 0;
     bool valid = false;
 
-    // --- Legacy Custom Format Fields (for Link layer compatibility) ---
-    uint8_t destination[RNS_ADDRESS_SIZE] = {0};  // 8-byte destination address
-    uint8_t source[RNS_ADDRESS_SIZE] = {0};       // 8-byte source address
-    uint8_t source_type = 0;                       // Legacy source type
-    uint16_t packet_id = 0;                        // Legacy packet ID
-    uint16_t sequence_number = 0;                  // Legacy sequence number
-    std::vector<uint8_t> payload;                  // Legacy payload (alias to data)
+    // Convenience fields populated by deserialize()
+    uint8_t destination[RNS_ADDRESS_SIZE] = {0};  // First 8 bytes of destination_hash
+    uint8_t source[RNS_ADDRESS_SIZE] = {0};       // Extracted from payload prefix (announce/link)
+    uint16_t packet_id = 0;                        // For link-context packets
+    uint16_t sequence_number = 0;                  // For link-context packets
+    std::vector<uint8_t> payload;                  // App data (after metadata stripped)
 
     RnsPacketInfo() : packet_len(0), valid(false) {}
 
@@ -122,28 +102,6 @@ namespace ReticulumPacket {
                    uint8_t context,                    // RNS_CONTEXT_NONE, etc.
                    uint8_t hops,
                    const std::vector<uint8_t>& data);  // Payload data (unencrypted for PLAIN)
-
-    // --- Legacy Custom Format Functions (for Link layer) ---
-    // Legacy serialize for data packets with sequence numbers
-    bool serialize(uint8_t *buffer, size_t &len,
-                   const uint8_t* destination,
-                   const uint8_t* source,
-                   uint8_t destination_type,
-                   uint8_t header_type,
-                   uint8_t context,
-                   uint16_t packet_id,
-                   uint8_t hops,
-                   const std::vector<uint8_t>& payload,
-                   uint16_t sequence_number);
-
-    // Legacy serialize for control packets (LINK_REQ, ACK, LINK_CLOSE)
-    bool serialize_control(uint8_t *buffer, size_t &len,
-                          const uint8_t* destination,
-                          const uint8_t* source,
-                          uint8_t header_type,
-                          uint8_t context,
-                          uint16_t packet_id,
-                          uint16_t sequence_number);
 }
 
 #endif // RETICULUM_PACKET_H

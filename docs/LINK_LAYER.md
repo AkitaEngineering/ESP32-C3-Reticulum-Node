@@ -108,15 +108,27 @@ The Link Layer implements a reliable transport mechanism providing:
 
 ## 4.0 PACKET TYPES AND FORMATS
 
+All link-layer packets use the official Reticulum wire format:
+
+```
+[FLAGS 1] [HOPS 1] [DEST_HASH 16] [CONTEXT 1] [DATA...]
+```
+
+Link metadata (source address, packet ID, sequence number) is encoded in
+the DATA payload prefix:
+
+```
+DATA = [SOURCE 8] [PACKET_ID 2] [SEQ_NUM 2] [APP_DATA...]
+```
+
+- **Flags**: packet_type = `RNS_PACKET_DATA`, dest_type = `RNS_DEST_LINK`
+- **Dest Hash**: 16-byte hash (first 8 bytes = target node address, remainder zero-padded)
+
 ### 4.1 Link Request Packet (LINK_REQ)
 
 #### 4.1.1 Packet Structure
-- **Header Type**: RNS_HEADER_TYPE_DATA
 - **Context**: RNS_CONTEXT_LINK_REQ (0xA1)
-- **Destination**: Target node address
-- **Source**: Initiating node address
-- **Payload**: Empty (typically)
-- **Flags**: REQ_ACK flag set
+- **Data payload**: `[SOURCE 8] [PACKET_ID 2] [SEQ_NUM=0 2]`
 
 #### 4.1.2 Processing Rules
 - Receiver must respond with ACK
@@ -127,14 +139,8 @@ The Link Layer implements a reliable transport mechanism providing:
 ### 4.2 Link Data Packet (LINK_DATA)
 
 #### 4.2.1 Packet Structure
-- **Header Type**: RNS_HEADER_TYPE_DATA
 - **Context**: RNS_CONTEXT_LINK_DATA (0xA3)
-- **Destination**: Target node address
-- **Source**: Sending node address
-- **Payload**: 
-  - Bytes 0-1: Sequence number (16-bit, big-endian)
-  - Bytes 2+: Application data
-- **Flags**: REQ_ACK flag set
+- **Data payload**: `[SOURCE 8] [PACKET_ID 2] [SEQ_NUM 2] [APP_DATA...]`
 
 #### 4.2.2 Processing Rules
 - Sequence number must be expected value
@@ -145,13 +151,8 @@ The Link Layer implements a reliable transport mechanism providing:
 ### 4.3 Acknowledgment Packet (ACK)
 
 #### 4.3.1 Packet Structure
-- **Header Type**: RNS_HEADER_TYPE_ACK
 - **Context**: RNS_CONTEXT_ACK (0xA4)
-- **Destination**: Acknowledged node address
-- **Source**: Acknowledging node address
-- **Payload**:
-  - Bytes 0-1: Acknowledged sequence number (16-bit, big-endian)
-  - Bytes 2+: Optional data (typically empty)
+- **Data payload**: `[SOURCE 8] [PACKET_ID 2] [ACKED_SEQ 2]`
 
 #### 4.3.2 Processing Rules
 - Acknowledges specific sequence number
@@ -162,12 +163,8 @@ The Link Layer implements a reliable transport mechanism providing:
 ### 4.4 Link Close Packet (LINK_CLOSE)
 
 #### 4.4.1 Packet Structure
-- **Header Type**: RNS_HEADER_TYPE_DATA
 - **Context**: RNS_CONTEXT_LINK_CLOSE (0xA2)
-- **Destination**: Target node address
-- **Source**: Closing node address
-- **Payload**: Empty (typically)
-- **Flags**: REQ_ACK flag set
+- **Data payload**: `[SOURCE 8] [PACKET_ID 2] [SEQ_NUM=0 2]`
 
 #### 4.4.2 Processing Rules
 - Receiver must respond with ACK
