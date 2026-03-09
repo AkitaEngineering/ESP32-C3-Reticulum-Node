@@ -59,6 +59,11 @@ public:
     // send periodic JSON metrics via UDP broadcast
     void sendUdpMetrics(const String &json);
 #endif
+    // ESP-NOW runtime control
+    bool isEspNowInitialized() const { return _espNowInitialized; }
+    void enableEspNow();
+    void disableEspNow();
+
 #ifdef LORA_ENABLED
     // LoRa-specific methods
     bool isLoRaInitialized() const { return _loraInitialized; }
@@ -136,6 +141,8 @@ private:
 
     PacketReceiverCallback _packetReceiver; // Callback to ReticulumNode::handleReceivedPacket
     RoutingTable& _routingTableRef; // Reference for route lookups / peer management
+
+    bool _espNowInitialized;
 
     // Keep a mirror of ESP-NOW peers added so we can display/remove them
     std::vector<std::array<uint8_t,6>> _espNowPeers;

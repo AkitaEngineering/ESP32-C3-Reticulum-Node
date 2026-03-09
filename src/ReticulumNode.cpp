@@ -7,6 +7,7 @@
 #include "RoutingTable.h"     // Needs definition for _routing_table member
 #include "Log.h"
 #include <EEPROM.h>           // Include EEPROM library
+#include <WiFi.h>             // For WiFi.status(), WiFi.macAddress() in printStatus
 #include <freertos/FreeRTOS.h> // for uxTaskGetStackHighWaterMark
 #if WEBSERVER_ENABLED
 #include "WebServer.h"
@@ -76,6 +77,7 @@ void ReticulumNode::loop() {
     _routingTable.prune(&_interfaceManager); // Prune old routes, pass IfMgr for peer removal
     sendAnnounceIfNeeded();     // Send periodic announce
     checkMemoryUsage();         // Check free memory
+    processDebugCommands();     // Process text commands from debug serial
 
 #if WEBSERVER_ENABLED
     _webServerManager.loop();
@@ -258,6 +260,56 @@ void ReticulumNode::checkMemoryUsage() {
     }
 }
 
+// --- Debug CLI ---
+void ReticulumNode::processDebugCommands() {
+    while (DebugSerial.available()) {
+        char c = DebugSerial.read();
+        if (c == '\n' || c == '\r') {
+            _debugCmdBuf.trim();
+            if (_debugCmdBuf.length() > 0) {
+                String cmd = _debugCmdBuf;
+                _debugCmdBuf = "";
+                cmd.toLowerCase();
+
+                if (cmd == "status") {
+                    printStatus();
+                } else if (cmd == "routes") {
+                    _routingTable.print();
+                } else if (cmd == "peers") {
+                    _interfaceManager.printEspNowPeers();
+                } else if (cmd == "espnow on") {
+                    _interfaceManager.enableEspNow();
+                } else if (cmd == "espnow off") {
+                    _interfaceManager.disableEspNow();
+                } else if (cmd == "help") {
+                    DebugSerial.println("Commands: status, routes, peers, espnow on/off, help");
+                } else {
+                    DebugSerial.print("Unknown command: ");
+                    DebugSerial.println(cmd);
+                    DebugSerial.println("Type 'help' for available commands.");
+                }
+            }
+        } else if (_debugCmdBuf.length() < 32) {
+            _debugCmdBuf += c;
+        }
+    }
+}
+
+void ReticulumNode::printStatus() {
+    DebugSerial.println("=== Node Status ===");
+    DebugSerial.print("  Address: ");  printNodeAddress();
+    DebugSerial.print("  Uptime: ");   DebugSerial.print(millis() / 1000); DebugSerial.println("s");
+    DebugSerial.print("  Free Heap: "); DebugSerial.println(ESP.getFreeHeap());
+    DebugSerial.print("  Routes: ");   DebugSerial.println(_routingTable.getRouteCount());
+    DebugSerial.print("  Links: ");    DebugSerial.println(_linkManager.getActiveLinkCount());
+    DebugSerial.println("--- Interfaces ---");
+    DebugSerial.println("  KISS USB: ON");
+    DebugSerial.print("  ESP-NOW:  "); DebugSerial.println(_interfaceManager.isEspNowInitialized() ? "ON" : "OFF");
+    DebugSerial.print("  WiFi AP:  "); DebugSerial.println(WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "not connected");
+    DebugSerial.print("  MAC:      "); DebugSerial.println(WiFi.macAddress());
+    DebugSerial.println("===================");
+}
+
 void ReticulumNode::sendAnnounceIfNeeded() {
     unsigned long now = millis();
     // Check if announce interval has passed
@@ -414,6 +466,9 @@ void ReticulumNode::processPacketForSelf(const RnsPacketInfo& packetInfo, Interf
                     handled = true;
                 } else if (cmd == "peers") {
                     _interfaceManager.printEspNowPeers();
+                    handled = true;
+                } else if (cmd == "status") {
+                    printStatus();
                     handled = true;
                 }
             }

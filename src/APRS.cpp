@@ -163,9 +163,8 @@ bool APRS::encodePosition(const AX25::Address& source, const Position& pos,
                            const char* comment, std::vector<uint8_t>& output) {
     // Build AX.25 UI frame with APRS position payload
     AX25::Frame frame;
-    frame.destination.setCallsign("APZ001"); // Experimental APRS destination
-    frame.destination.ssid = 0;
-    memcpy(frame.source.callsign, source.callsign, 7);
+    frame.destination = AX25::Address("APZ001", 0); // APRS path destination
+    memcpy(frame.source.callsign, source.callsign, 6);
     frame.source.ssid = source.ssid;
     frame.control = AX25::ControlType::U_UI;
     frame.pid = 0xF0; // No layer 3
@@ -184,9 +183,8 @@ bool APRS::encodePosition(const AX25::Address& source, const Position& pos,
 bool APRS::encodeWeather(const AX25::Address& source, const Weather& weather,
                           const char* comment, std::vector<uint8_t>& output) {
     AX25::Frame frame;
-    frame.destination.setCallsign("APZ001");
-    frame.destination.ssid = 0;
-    memcpy(frame.source.callsign, source.callsign, 7);
+    frame.destination = AX25::Address("APZ001", 0);
+    memcpy(frame.source.callsign, source.callsign, 6);
     frame.source.ssid = source.ssid;
     frame.control = AX25::ControlType::U_UI;
     frame.pid = 0xF0;
@@ -204,9 +202,8 @@ bool APRS::encodeWeather(const AX25::Address& source, const Weather& weather,
 bool APRS::encodeMessage(const AX25::Address& source, const AX25::Address& destination,
                          const Message& msg, std::vector<uint8_t>& output) {
     AX25::Frame frame;
-    frame.destination.setCallsign("APZ001");
-    frame.destination.ssid = 0;
-    memcpy(frame.source.callsign, source.callsign, 7);
+    frame.destination = AX25::Address("APZ001", 0);
+    memcpy(frame.source.callsign, source.callsign, 6);
     frame.source.ssid = source.ssid;
     frame.control = AX25::ControlType::U_UI;
     frame.pid = 0xF0;
@@ -228,9 +225,8 @@ bool APRS::encodeMessage(const AX25::Address& source, const AX25::Address& desti
 bool APRS::encodeStatus(const AX25::Address& source, const char* status,
                         std::vector<uint8_t>& output) {
     AX25::Frame frame;
-    frame.destination.setCallsign("APZ001");
-    frame.destination.ssid = 0;
-    memcpy(frame.source.callsign, source.callsign, 7);
+    frame.destination = AX25::Address("APZ001", 0);
+    memcpy(frame.source.callsign, source.callsign, 6);
     frame.source.ssid = source.ssid;
     frame.control = AX25::ControlType::U_UI;
     frame.pid = 0xF0;

@@ -58,6 +58,10 @@ private:
     void checkMemoryUsage();
     void sendAnnounceIfNeeded(); // Generates and sends announce packets
 
+    // --- Debug CLI ---
+    void processDebugCommands(); // Process text commands from debug serial
+    void printStatus();          // Print node/interface status summary
+
     // --- Core Packet Handling ---
     // Main callback passed to InterfaceManager
     void handleReceivedPacket(const uint8_t *packetBuffer, size_t packetLen, InterfaceType interface,
@@ -92,6 +96,9 @@ private:
     static constexpr size_t RECENT_DATA_PKT_SIZE = 64;
     uint32_t _recentDataPkts[RECENT_DATA_PKT_SIZE];
     size_t _recentDataPktIdx;
+
+    // Debug CLI input buffer
+    String _debugCmdBuf;
 };
 
 #endif // RETICULUM_NODE_H

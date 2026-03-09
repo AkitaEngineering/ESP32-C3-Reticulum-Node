@@ -36,6 +36,7 @@ InterfaceManager* InterfaceManager::_instance = nullptr;
 InterfaceManager::InterfaceManager(PacketReceiverCallback receiver, RoutingTable& routingTable) :
     _packetReceiver(receiver),
     _routingTableRef(routingTable),
+    _espNowInitialized(false),
     // Use lambda to capture 'this' for the member function callback
     _serialKissProcessor([this](const std::vector<uint8_t>& data, InterfaceType iface){ this->handleKissPacket(data, iface); })
 #if BLUETOOTH_CLASSIC_AVAILABLE
@@ -70,26 +71,14 @@ InterfaceManager::InterfaceManager(PacketReceiverCallback receiver, RoutingTable
 void InterfaceManager::setup() {
     setupSerial(); // Assumes Serial.begin() already called
 
-#ifdef DISABLE_WIFI
-    DebugSerial.println("IF: Full Interface initialization STUBBED (DISABLE_WIFI)");
-    return; // Short-circuit everything for isolation/testing
-#endif
-
     // Initialize Bluetooth first (if available)
 #if BLUETOOTH_CLASSIC_AVAILABLE
     setupBluetooth();
 #endif
     
-    // Configure WiFi power save mode BEFORE initializing WiFi
-#ifndef DISABLE_WIFI
-    esp_wifi_set_ps(WIFI_PS_MIN_MODEM);  // Use minimum power save mode when both BT and WiFi are active
-    
-    // Now setup WiFi and ESP-NOW
-    setupWiFi();   // Sets mode, connects, starts UDP
-    setupESPNow(); // Depends on WiFi mode being set
-#else
-    DebugSerial.println("IF: WiFi initialization disabled (DISABLE_WIFI)");
-#endif
+    // Always start WiFi radio (needed for ESP-NOW even without AP connection)
+    setupWiFi();
+    setupESPNow();
     
 #ifdef LORA_ENABLED
     setupLoRa();
@@ -141,39 +130,39 @@ void InterfaceManager::setupWiFi() {
     WiFi.mode(WIFI_OFF);   // Ensure WiFi is off before reconfiguring
     delay(100);            // Small delay to ensure WiFi is fully off
     
-    WiFi.mode(WIFI_AP_STA); // ESP-NOW needs STA or AP mode active
-    
-    // Set WiFi to use reduced power mode when BT is active
+    // STA mode is required for ESP-NOW — always enable it
+    WiFi.mode(WIFI_STA);
     esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
-    
-    WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-    LOG_INFO("IF: Connecting to WiFi %s", WIFI_SSID);
-    int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
-        delay(500); DebugSerial.print("."); attempts++;
-    }
-    if (WiFi.status() == WL_CONNECTED) {
-        LOG_INFO("IF: WiFi connected.");
-        LOG_INFO("IF: IP address: %s", WiFi.localIP().toString().c_str());
-        setenv("TZ", "UTC0", 1);
-        tzset();
-        configTime(0, 0, "pool.ntp.org", "time.nist.gov", "time.google.com");
-        if (_udp.begin(RNS_UDP_PORT)) {
-            DebugSerial.print("IF: UDP Listening on port "); DebugSerial.println(RNS_UDP_PORT);
+
+    // Only attempt AP connection if credentials are provided
+    if (strlen(WIFI_SSID) > 0 && strlen(WIFI_PASSWORD) > 0) {
+        WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+        LOG_INFO("IF: Connecting to WiFi %s", WIFI_SSID);
+        int attempts = 0;
+        while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+            delay(500); DebugSerial.print("."); attempts++;
+        }
+        if (WiFi.status() == WL_CONNECTED) {
+            LOG_INFO("IF: WiFi connected.");
+            LOG_INFO("IF: IP address: %s", WiFi.localIP().toString().c_str());
+            setenv("TZ", "UTC0", 1);
+            tzset();
+            configTime(0, 0, "pool.ntp.org", "time.nist.gov", "time.google.com");
+            if (_udp.begin(RNS_UDP_PORT)) {
+                DebugSerial.print("IF: UDP Listening on port "); DebugSerial.println(RNS_UDP_PORT);
+            } else {
+                DebugSerial.println("! ERROR: Failed to start UDP listener!");
+            }
         } else {
-            DebugSerial.println("! ERROR: Failed to start UDP listener!");
+            LOG_WARN("IF: WiFi connection failed after %d attempts.", attempts);
         }
     } else {
-        LOG_WARN("IF: WiFi connection failed.");
-        // Node might operate without WiFi, but UDP interface won't work
+        LOG_INFO("IF: No WiFi credentials configured, skipping AP connection.");
+        LOG_INFO("IF: WiFi radio active in STA mode for ESP-NOW.");
     }
 }
 
 void InterfaceManager::setupESPNow() {
-#ifdef DISABLE_WIFI
-    DebugSerial.println("IF: setupESPNow() skipped (DISABLE_WIFI)");
-    return;
-#endif
      DebugSerial.print("IF: Device MAC: "); DebugSerial.println(WiFi.macAddress());
 
     // Optional channel override
@@ -203,6 +192,8 @@ void InterfaceManager::setupESPNow() {
     }
     // esp_now_register_send_cb(staticEspNowSendCallback); // Optional: register send status callback
 
+    _espNowInitialized = true;
+
     // Add broadcast peer initially (needed to receive broadcasts)
     if (!addEspNowPeer(espnow_broadcast_mac)) {
          DebugSerial.println("! WARN: Failed to add initial ESP-NOW broadcast peer");
@@ -222,8 +213,8 @@ void InterfaceManager::setupBluetooth() {
 #endif
 
 // --- Input Processing ---
-#ifndef DISABLE_WIFI
 void InterfaceManager::processWiFiInput() {
+    if (WiFi.status() != WL_CONNECTED) return;
     int packetSize = _udp.parsePacket();
     if (packetSize > 0) {
         if (packetSize > MAX_PACKET_SIZE) {
@@ -246,11 +237,6 @@ void InterfaceManager::processWiFiInput() {
         }
     }
 }
-#else
-void InterfaceManager::processWiFiInput() {
-    /* WiFi disabled at build-time — no-op */
-}
-#endif
 
 void InterfaceManager::processSerialInput() {
      while (KissSerial.available()) {
@@ -305,7 +291,7 @@ void InterfaceManager::sendPacket(const uint8_t *packetBuffer, size_t packetLen,
     } else {
         // No route, broadcast on primary interfaces (excluding source)
         // DebugSerial.print("Broadcasting packet (no route found) for dest: "); Utils::printBytes(destinationAddr, RNS_ADDRESS_SIZE, DebugSerial); DebugSerial.println(); // Verbose
-        if (excludeInterface != InterfaceType::ESP_NOW) {
+        if (_espNowInitialized && excludeInterface != InterfaceType::ESP_NOW) {
             sendPacketViaEspNow(packetBuffer, packetLen, nullptr); // Broadcast = null dest for internal func
         }
         if (WiFi.status() == WL_CONNECTED && excludeInterface != InterfaceType::WIFI_UDP) {
@@ -316,8 +302,8 @@ void InterfaceManager::sendPacket(const uint8_t *packetBuffer, size_t packetLen,
             sendPacketViaLoRa(packetBuffer, packetLen, nullptr);
         }
 #endif
-        // Broadcast on Serial/BT usually only for specific bridging applications, skip by default
-        // if (excludeInterface != InterfaceType::SERIAL_PORT) { sendPacketViaSerial(packetBuffer, packetLen); }
+        // Bridge packets to serial KISS (USB) so the host receives them
+        if (excludeInterface != InterfaceType::SERIAL_PORT) { sendPacketViaSerial(packetBuffer, packetLen); }
 #if BLUETOOTH_CLASSIC_AVAILABLE
         // if (_serialBT.connected() && excludeInterface != InterfaceType::BLUETOOTH) { sendPacketViaBluetooth(packetBuffer, packetLen); }
 #endif
@@ -327,8 +313,8 @@ void InterfaceManager::sendPacket(const uint8_t *packetBuffer, size_t packetLen,
 void InterfaceManager::sendPacketVia(InterfaceType ifType, const uint8_t *packetBuffer, size_t packetLen, const uint8_t *destinationAddr) {
      if (!packetBuffer || packetLen == 0) return;
      switch(ifType) {
-        case InterfaceType::ESP_NOW:  sendPacketViaEspNow(packetBuffer, packetLen, destinationAddr); break;
-        case InterfaceType::WIFI_UDP: sendPacketViaWiFi(packetBuffer, packetLen, destinationAddr); break;
+        case InterfaceType::ESP_NOW:  if (_espNowInitialized) sendPacketViaEspNow(packetBuffer, packetLen, destinationAddr); break;
+        case InterfaceType::WIFI_UDP: if (WiFi.status() == WL_CONNECTED) sendPacketViaWiFi(packetBuffer, packetLen, destinationAddr); break;
         case InterfaceType::SERIAL_PORT:   sendPacketViaSerial(packetBuffer, packetLen); break;
 #if BLUETOOTH_CLASSIC_AVAILABLE
         case InterfaceType::BLUETOOTH:sendPacketViaBluetooth(packetBuffer, packetLen); break;
@@ -349,7 +335,9 @@ void InterfaceManager::sendPacketVia(InterfaceType ifType, const uint8_t *packet
 void InterfaceManager::broadcastAnnounce(const uint8_t *packetBuffer, size_t packetLen) {
      if (!packetBuffer || packetLen == 0) return;
      // Use nullptr destination for broadcast variants
-     sendPacketViaEspNow(packetBuffer, packetLen, nullptr);
+     if (_espNowInitialized) {
+         sendPacketViaEspNow(packetBuffer, packetLen, nullptr);
+     }
      if (WiFi.status() == WL_CONNECTED) {
          sendPacketViaWiFi(packetBuffer, packetLen, nullptr);
      }
@@ -363,6 +351,8 @@ void InterfaceManager::broadcastAnnounce(const uint8_t *packetBuffer, size_t pac
          sendPacketViaHAMModem(packetBuffer, packetLen);
      }
 #endif
+     // Always send announces via serial KISS (USB/UART)
+     sendPacketViaSerial(packetBuffer, packetLen);
 }
 
 // Internal send implementations
@@ -450,8 +440,32 @@ void InterfaceManager::sendPacketViaBluetooth(const uint8_t *packetBuffer, size_
 #endif
 
 // --- ESP-NOW Peer Management ---
+void InterfaceManager::enableEspNow() {
+    if (_espNowInitialized) {
+        DebugSerial.println("IF: ESP-NOW already enabled.");
+        return;
+    }
+    // Ensure WiFi radio is in STA mode
+    if (WiFi.getMode() == WIFI_OFF) {
+        WiFi.mode(WIFI_STA);
+        esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+    }
+    setupESPNow();
+}
+
+void InterfaceManager::disableEspNow() {
+    if (!_espNowInitialized) {
+        DebugSerial.println("IF: ESP-NOW already disabled.");
+        return;
+    }
+    esp_now_deinit();
+    _espNowPeers.clear();
+    _espNowInitialized = false;
+    DebugSerial.println("IF: ESP-NOW disabled.");
+}
+
 bool InterfaceManager::addEspNowPeer(const uint8_t* mac_addr) {
-    if (!mac_addr) return false;
+    if (!mac_addr || !_espNowInitialized) return false;
     if (checkEspNowPeer(mac_addr)) {
         // ensure our list also contains it
         std::array<uint8_t,6> arr;
@@ -493,7 +507,7 @@ bool InterfaceManager::addEspNowPeer(const uint8_t* mac_addr) {
 }
 
 bool InterfaceManager::removeEspNowPeer(const uint8_t* mac_addr) {
-     if (!mac_addr) return false;
+     if (!mac_addr || !_espNowInitialized) return false;
      if (!checkEspNowPeer(mac_addr)) return false; // Not found
 
      esp_err_t del_result = esp_now_del_peer(mac_addr);
@@ -511,7 +525,7 @@ bool InterfaceManager::removeEspNowPeer(const uint8_t* mac_addr) {
 }
 
 bool InterfaceManager::checkEspNowPeer(const uint8_t* mac_addr) {
-    if (!mac_addr) return false;
+    if (!mac_addr || !_espNowInitialized) return false;
     // esp_now_is_peer_exist() is deprecated/removed in later IDF versions.
     // Use esp_now_get_peer() and check result.
     esp_now_peer_info_t peer_info;
