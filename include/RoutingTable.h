@@ -17,14 +17,13 @@
 class InterfaceManager; // Needed? Only if RoutingTable needs to call InterfaceManager for peer removal
 
 struct RouteEntry {
-    uint8_t destination_addr[RNS_ADDRESS_SIZE];
-    uint8_t next_hop_mac[6];
+    uint8_t destination_addr[RNS_ADDRESS_SIZE] = {0};
+    uint8_t next_hop_mac[6] = {0};
     IPAddress next_hop_ip;
-    uint16_t next_hop_port;
-    unsigned long last_heard_time;
-    InterfaceType interface;
-    uint8_t hops; // Store hops from Announce
-    // Note: RSSI is not reliably available via Arduino ESP-NOW API
+    uint16_t next_hop_port = 0;
+    unsigned long last_heard_time = 0;
+    InterfaceType interface = InterfaceType::ESP_NOW;
+    uint8_t hops = 0;
 };
 
 // Structure to store recent announce IDs (Packet ID + Source Addr prefix)

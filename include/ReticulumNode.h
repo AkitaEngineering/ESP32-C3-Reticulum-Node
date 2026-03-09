@@ -87,6 +87,11 @@ private:
 
     // Subscribed Groups (loaded from Config)
     std::vector<std::array<uint8_t, RNS_ADDRESS_SIZE>> _subscribedGroups;
+
+    // Data packet dedup: ring buffer of recent forwarded-packet hashes
+    static constexpr size_t RECENT_DATA_PKT_SIZE = 64;
+    uint32_t _recentDataPkts[RECENT_DATA_PKT_SIZE];
+    size_t _recentDataPktIdx;
 };
 
 #endif // RETICULUM_NODE_H

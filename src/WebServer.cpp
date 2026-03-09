@@ -1,6 +1,7 @@
 #include "WebServer.h"
 #include "Config.h"
 #include "Utils.h"
+#include "Log.h"
 
 #if WEBSERVER_ENABLED
 
@@ -81,13 +82,23 @@ static bool checkAuth(const String &authHeader) {
 #endif
     expected.trim();
     // If no token configured, allow bootstrap (first-time config)
-    if (expected.length() == 0) return true;
+    if (expected.length() == 0) {
+        LOG_WARN("WebServer: No API token configured - bootstrap mode (unauthenticated access)");
+        return true;
+    }
 
     String token = authHeader;
     token.trim();
     if (token.startsWith("Bearer ")) token = token.substring(7);
     token.trim();
-    return token == expected;
+
+    // Constant-time comparison to prevent timing attacks
+    if (token.length() != expected.length()) return false;
+    volatile uint8_t result = 0;
+    for (size_t i = 0; i < token.length(); i++) {
+        result |= (uint8_t)(token[i] ^ expected[i]);
+    }
+    return result == 0;
 #else
     (void)authHeader; return true;
 #endif
@@ -119,7 +130,7 @@ void processHttpClient(WiFiClient &client) {
     String method = req.substring(0, firstSpace);
     String path = req.substring(firstSpace + 1, secondSpace);
 
-    // Read headers
+    // Read headers (case-insensitive comparison)
     int contentLength = 0;
     String authHeader;
     String signatureHex;
@@ -127,19 +138,28 @@ void processHttpClient(WiFiClient &client) {
         String line = readLine(client);
         if (line.length() <= 2) break; // \r\n
         line.trim();
-        if (line.startsWith("Content-Length:")) {
+        String lower = line;
+        lower.toLowerCase();
+        if (lower.startsWith("content-length:")) {
             contentLength = line.substring(15).toInt();
-        } else if (line.startsWith("Authorization:")) {
+        } else if (lower.startsWith("authorization:")) {
             authHeader = line.substring(14);
             authHeader.trim();
-        } else if (line.startsWith("X-Signature-Ed25519:")) {
+        } else if (lower.startsWith("x-signature-ed25519:")) {
             signatureHex = line.substring(20);
             signatureHex.trim();
         }
     }
 
-    // For OTA uploads we stream to SPIFFS directly; otherwise read body into memory
+    // Enforce body size limit to prevent memory exhaustion
+    const int MAX_BODY_SIZE = 4096;
     bool isOtaUpload = (method == "POST" && path == "/api/v1/ota");
+    if (!isOtaUpload && contentLength > MAX_BODY_SIZE) {
+        sendResponse(client, 400, "text/plain", "Body too large");
+        return;
+    }
+
+    // For OTA uploads we stream to SPIFFS directly; otherwise read body into memory
     String body;
     if (!isOtaUpload && contentLength > 0) {
         unsigned long start = millis();
@@ -153,6 +173,7 @@ void processHttpClient(WiFiClient &client) {
 
     // Route handling
     if (method == "GET" && path == "/api/v1/status") {
+        if (!checkAuth(authHeader)) { sendUnauthorized(client); return; }
         DynamicJsonDocument doc(512);
         doc["uptime_s"] = millis() / 1000;
         doc["free_heap"] = ESP.getFreeHeap();
@@ -271,7 +292,9 @@ void processHttpClient(WiFiClient &client) {
         if (remaining != 0) { sendResponse(client, 400, "text/plain", "Incomplete upload"); SPIFFS.remove(tmpPath); return; }
 
         // Size safety: avoid loading huge files into RAM for verification
-        size_t fsize = SPIFFS.open(tmpPath, FILE_READ).size();
+        File szFile = SPIFFS.open(tmpPath, FILE_READ);
+        size_t fsize = szFile ? szFile.size() : 0;
+        if (szFile) szFile.close();
         const size_t MAX_OTA_VERIFY_SIZE = 2 * 1024 * 1024; // 2 MB
         if (fsize == 0 || fsize != (size_t)contentLength) { sendResponse(client, 400, "text/plain", "Upload size mismatch"); SPIFFS.remove(tmpPath); return; }
         if (fsize > MAX_OTA_VERIFY_SIZE) { sendResponse(client, 400, "text/plain", "OTA image too large to verify"); SPIFFS.remove(tmpPath); return; }

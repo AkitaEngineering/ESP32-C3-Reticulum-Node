@@ -8,6 +8,10 @@
 #include "Log.h"
 #include <EEPROM.h>           // Include EEPROM library
 #include <freertos/FreeRTOS.h> // for uxTaskGetStackHighWaterMark
+#if WEBSERVER_ENABLED
+#include "WebServer.h"
+static WebServerManager _webServerManager;
+#endif
 #if METRICS_ENABLED
 #include <ArduinoJson.h>
 #endif
@@ -29,9 +33,11 @@ ReticulumNode::ReticulumNode() :
     _linkManager(*this),
     _last_announce_time(0),
     _last_mem_check_time(0),
-    _appDataHandler(nullptr) // Initialize callback to null
+    _appDataHandler(nullptr), // Initialize callback to null
+    _recentDataPktIdx(0)
 {
     memset(_nodeAddress, 0, RNS_ADDRESS_SIZE); // Clear address initially
+    memset(_recentDataPkts, 0, sizeof(_recentDataPkts));
 }
 
 void ReticulumNode::setup() {
@@ -56,6 +62,10 @@ void ReticulumNode::setup() {
     _routingTable.prune(nullptr); // Initial call to set timer base
 
     LOG_INFO("Node Setup Complete. Free Heap: %u", ESP.getFreeHeap());
+
+#if WEBSERVER_ENABLED
+    _webServerManager.begin();
+#endif
 }
 
 void ReticulumNode::loop() {
@@ -66,6 +76,10 @@ void ReticulumNode::loop() {
     _routingTable.prune(&_interfaceManager); // Prune old routes, pass IfMgr for peer removal
     sendAnnounceIfNeeded();     // Send periodic announce
     checkMemoryUsage();         // Check free memory
+
+#if WEBSERVER_ENABLED
+    _webServerManager.loop();
+#endif
 
     // delay(1); // Generally avoid delay() in main loop if possible
 }
@@ -143,8 +157,8 @@ void ReticulumNode::loadPacketCounter() {
     // Manual read for compatibility:
     _packetCounter = (EEPROM.read(EEPROM_ADDR_PKTID + 0) << 8) | EEPROM.read(EEPROM_ADDR_PKTID + 1);
 
-    // Validate loaded value: treat 0xFFFF, 0x0000 or very small values as uninitialized/corrupt
-    if (_packetCounter == 0xFFFF || _packetCounter == 0x0000 || _packetCounter < 10) {
+    // Validate loaded value: treat 0xFFFF and 0x0000 as uninitialized/corrupt
+    if (_packetCounter == 0xFFFF || _packetCounter == 0x0000) {
         uint16_t old = _packetCounter;
         _packetCounter = (uint16_t)(esp_random() & 0xFFFF);
         DebugSerial.print("Invalid/empty packet counter in EEPROM (read="); DebugSerial.print(old);
@@ -471,6 +485,21 @@ void ReticulumNode::forwardPacket(const RnsPacketInfo& packetInfo, InterfaceType
         return;
     }
 
+    // Duplicate detection: compute hash of destination + payload to avoid
+    // forwarding the same data packet multiple times (prevents exponential
+    // traffic amplification in a mesh).
+    uint32_t pktHash = 0;
+    for (int i = 0; i < RNS_ADDRESS_SIZE; ++i) pktHash = pktHash * 31 + packetInfo.destination[i];
+    for (auto b : packetInfo.data) pktHash = pktHash * 31 + b;
+    for (size_t i = 0; i < RECENT_DATA_PKT_SIZE; ++i) {
+        if (_recentDataPkts[i] == pktHash) {
+            // Already forwarded recently
+            return;
+        }
+    }
+    _recentDataPkts[_recentDataPktIdx % RECENT_DATA_PKT_SIZE] = pktHash;
+    _recentDataPktIdx++;
+
     // Create forwarding packet info (increment hops)
     RnsPacketInfo forwardInfo = packetInfo; // Creates a copy
     forwardInfo.hops++;
@@ -505,12 +534,18 @@ void ReticulumNode::forwardAnnounce(const RnsPacketInfo& packetInfo, InterfaceTy
     }
 
     // Check if this announce was recently forwarded to prevent loops/storms
-    if (!_routingTable.shouldForwardAnnounce(packetInfo.packet_id, packetInfo.source)) {
+    // Use a hash of source + payload as the key since packet_id is always 0 for announces
+    uint32_t announceHash = 0;
+    for (int i = 0; i < RNS_ADDRESS_SIZE; ++i) announceHash = announceHash * 31 + packetInfo.source[i];
+    for (auto b : packetInfo.data) announceHash = announceHash * 31 + b;
+    uint16_t announceKey = (uint16_t)(announceHash & 0xFFFF);
+
+    if (!_routingTable.shouldForwardAnnounce(announceKey, packetInfo.source)) {
          // DebugSerial.println("Announce recently forwarded or loop detected. Skipping re-broadcast."); // Verbose
         return;
     }
     // Mark as forwarded BEFORE sending
-    _routingTable.markAnnounceForwarded(packetInfo.packet_id, packetInfo.source);
+    _routingTable.markAnnounceForwarded(announceKey, packetInfo.source);
 
     // Create forwarding packet info (increment hops)
     RnsPacketInfo forwardInfo = packetInfo;

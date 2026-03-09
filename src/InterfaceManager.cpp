@@ -384,7 +384,13 @@ void InterfaceManager::sendPacketViaEspNow(const uint8_t *packetBuffer, size_t p
     } // else: destinationAddr is null -> use broadcastMac
 
     esp_err_t result = esp_now_send(targetMac, packetBuffer, packetLen);
-    if (result != ESP_OK) { DebugSerial.print("! ESP-NOW Send Error to "); Utils::printBytes(targetMac, 6, DebugSerial); DebugSerial.print(": "); DebugSerial.println(esp_err_to_name(result)); }
+    if (result != ESP_OK) {
+        if (result == ESP_ERR_ESPNOW_NO_MEM || packetLen > 250) {
+            DebugSerial.print("! ESP-NOW packet too large ("); DebugSerial.print(packetLen); DebugSerial.println(" bytes, max 250)");
+        } else {
+            DebugSerial.print("! ESP-NOW Send Error to "); Utils::printBytes(targetMac, 6, DebugSerial); DebugSerial.print(": "); DebugSerial.println(esp_err_to_name(result));
+        }
+    }
 }
 
 void InterfaceManager::sendPacketViaWiFi(const uint8_t *packetBuffer, size_t packetLen, const uint8_t *destinationAddr) {
@@ -574,6 +580,11 @@ void InterfaceManager::setupLoRa() {
     int state = _lora->begin(LORA_FREQUENCY, LORA_BANDWIDTH, LORA_SPREADING_FACTOR, LORA_CODING_RATE, LORA_SYNC_WORD, LORA_OUTPUT_POWER, LORA_PREAMBLE_LENGTH, LORA_GAIN);
     
     if (state == RADIOLIB_ERR_NONE) {
+        // Put radio into continuous RX mode so processLoRaInput() can receive
+        int rxState = _lora->startReceive();
+        if (rxState != RADIOLIB_ERR_NONE) {
+            DebugSerial.print("! WARN: LoRa startReceive failed: "); DebugSerial.println(rxState);
+        }
         _loraInitialized = true;
         DebugSerial.println("IF: LoRa initialized successfully.");
         DebugSerial.print("IF: Frequency: "); DebugSerial.print(LORA_FREQUENCY); DebugSerial.println(" MHz");
@@ -642,6 +653,8 @@ void InterfaceManager::sendPacketViaLoRa(const uint8_t *packetBuffer, size_t pac
         DebugSerial.print("! ERROR: LoRa transmit failed with code: ");
         DebugSerial.println(state);
     }
+    // Re-enter RX mode after transmit (transmit leaves radio in standby)
+    _lora->startReceive();
 }
 #endif
 
@@ -975,6 +988,16 @@ bool InterfaceManager::fetchIPFSContent(const char* ipfsHash, std::vector<uint8_
     if (!ipfsHash || strlen(ipfsHash) == 0) {
         DebugSerial.println("! ERROR: Invalid IPFS hash");
         return false;
+    }
+
+    // Validate IPFS hash: must be alphanumeric (CIDv0 base58 or CIDv1 base32)
+    // Reject hashes containing path traversal, query strings, or other injection chars
+    for (const char* p = ipfsHash; *p; ++p) {
+        char c = *p;
+        if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9'))) {
+            DebugSerial.println("! ERROR: IPFS hash contains invalid characters");
+            return false;
+        }
     }
     
     // Build URL: gateway + hash

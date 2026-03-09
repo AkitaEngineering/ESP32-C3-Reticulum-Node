@@ -121,9 +121,10 @@ bool AX25::decodeFrame(const uint8_t* data, size_t len, Frame& frame) {
     
     size_t offset = 0;
     
-    // Skip opening flag
-    if (data[offset] != FLAG) return false;
-    offset++;
+    // Skip opening flag if present (may have been stripped by the modem layer)
+    if (data[offset] == FLAG) {
+        offset++;
+    }
     
     // Decode destination
     if (!decodeAddress(data, offset, frame.destination)) return false;

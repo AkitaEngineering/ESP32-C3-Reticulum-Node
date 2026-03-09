@@ -100,7 +100,9 @@ bool Link::sendData(const std::vector<uint8_t>& dataPayload) {
          DebugSerial.println("! Link::sendData failed: Link busy (awaiting ACK).");
          return false; // Wait for previous ACK
     }
-    if (dataPayload.size() > RNS_MAX_PAYLOAD - RNS_SEQ_SIZE) {
+    // buildLinkPayload adds SOURCE(8) + PACKET_ID(2) + SEQ(2) = 12 bytes overhead
+    const size_t LINK_OVERHEAD = RNS_ADDRESS_SIZE + 4;
+    if (dataPayload.size() > RNS_MAX_PAYLOAD - LINK_OVERHEAD) {
         DebugSerial.println("! Link::sendData failed: Payload too large.");
         return false;
     }
@@ -309,13 +311,22 @@ void Link::processData(const RnsPacketInfo& dataPacket) {
           _ownerRef.processReceivedLinkData(dataPacket.source, dataPacket.data);
           _expectedIncomingSequence++;
           sendAck(dataPacket.sequence_number);
-     } else if (dataPacket.sequence_number < _expectedIncomingSequence) {
-          // Duplicate packet - Resend ACK for the duplicate's sequence number
-          DebugSerial.print("Link(ESTABLISHED): Duplicate data seq "); DebugSerial.print(dataPacket.sequence_number); DebugSerial.print(" (expected "); DebugSerial.print(_expectedIncomingSequence); DebugSerial.println("). Resending ACK.");
-          sendAck(dataPacket.sequence_number);
      } else {
-          // Out of order - Ignore (simple strategy)
-          DebugSerial.print("! Link(ESTABLISHED): Out-of-order seq "); DebugSerial.print(dataPacket.sequence_number); DebugSerial.print(" (expected "); DebugSerial.print(_expectedIncomingSequence); DebugSerial.println("). Ignoring.");
+          // Handle sequence wrap-around: treat values within a small window
+          // ahead of expected as "future" (out-of-order), and others as duplicates.
+          int32_t diff = (int32_t)dataPacket.sequence_number - (int32_t)_expectedIncomingSequence;
+          // Normalize to signed 16-bit range for wrap-around comparison
+          if (diff > 32767)  diff -= 65536;
+          if (diff < -32768) diff += 65536;
+
+          if (diff < 0) {
+              // Duplicate packet (behind expected) - Resend ACK
+              DebugSerial.print("Link(ESTABLISHED): Duplicate data seq "); DebugSerial.print(dataPacket.sequence_number); DebugSerial.print(" (expected "); DebugSerial.print(_expectedIncomingSequence); DebugSerial.println("). Resending ACK.");
+              sendAck(dataPacket.sequence_number);
+          } else {
+              // Out of order (ahead of expected) - Ignore (simple strategy)
+              DebugSerial.print("! Link(ESTABLISHED): Out-of-order seq "); DebugSerial.print(dataPacket.sequence_number); DebugSerial.print(" (expected "); DebugSerial.print(_expectedIncomingSequence); DebugSerial.println("). Ignoring.");
+          }
      }
 }
 

@@ -1,5 +1,7 @@
 #include "AudioModem.h"
 #include <math.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 
 // AFSK/Bell 202 implementation (TX blocking; RX Goertzel-based, lightweight).
 // Note: RX requires periodic calls to processAudioSample(sample) with real ADC samples
@@ -75,9 +77,14 @@ bool AudioModem::begin(uint8_t rxPin, uint8_t txPin, uint32_t sampleRate) {
     _goertzelSpace.coeff = 2.0f * cosf(wSpace);
 
     // Setup LEDC for tone generation (TX)
+#if ESP_ARDUINO_VERSION_MAJOR >= 3
+    // Arduino Core 3.x: channel-less API, attach directly to pin
+    ledcAttach(_txPin, _markFreq, _ledcResolution);
+#else
     ledcSetup(_ledcChannel, _markFreq, _ledcResolution);
     ledcAttachPin(_txPin, _ledcChannel);
     ledcWrite(_ledcChannel, 128); // 50% duty
+#endif
 
     return true;
 }
@@ -90,6 +97,7 @@ bool AudioModem::transmit(const uint8_t* data, size_t len) {
     uint8_t lastNRZI = 1; // initial line state
     const uint32_t bitUs = 1000000UL / _baudRate;
     uint8_t ones = 0;
+    uint32_t bitsTransmitted = 0;
 
     for (size_t i = 0; i < len; ++i) {
         uint8_t b = data[i];
@@ -107,6 +115,7 @@ bool AudioModem::transmit(const uint8_t* data, size_t len) {
             uint16_t freq = lastNRZI ? _markFreq : _spaceFreq;
             ledcWriteTone(_ledcChannel, freq);
             delayMicroseconds(bitUs);
+            bitsTransmitted++;
 
             // Bit-stuff after five consecutive ones: insert a 0 (toggle)
             if (ones == 5) {
@@ -115,6 +124,12 @@ bool AudioModem::transmit(const uint8_t* data, size_t len) {
                 freq = lastNRZI ? _markFreq : _spaceFreq;
                 ledcWriteTone(_ledcChannel, freq);
                 delayMicroseconds(bitUs);
+                bitsTransmitted++;
+            }
+
+            // Yield to RTOS every ~100 bits (~83ms at 1200 baud) to prevent watchdog timeout
+            if (bitsTransmitted % 100 == 0) {
+                vTaskDelay(1);
             }
         }
     }

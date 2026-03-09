@@ -38,6 +38,27 @@
     #endif
 #endif
 
+// When KISS_OVER_USB is active, debug goes to a hardware UART.  We define
+// the debug UART pin numbers BEFORE the DebugSerialShim class so they are
+// visible inside the begin() method.
+#if defined(KISS_OVER_USB)
+    #if defined(CONFIG_IDF_TARGET_ESP32C3)
+        #ifndef DEBUG_UART_RX
+        #define DEBUG_UART_RX 2
+        #endif
+        #ifndef DEBUG_UART_TX
+        #define DEBUG_UART_TX 4
+        #endif
+    #else
+        #ifndef DEBUG_UART_RX
+        #define DEBUG_UART_RX -1
+        #endif
+        #ifndef DEBUG_UART_TX
+        #define DEBUG_UART_TX -1
+        #endif
+    #endif
+#endif
+
 // Debug serial shim: when DEBUG_ENABLED is 0, debug output is suppressed while
 // still allowing code to compile unchanged.
 class DebugSerialShim : public Stream {
@@ -79,19 +100,7 @@ extern DebugSerialShim DebugSerial; // Use USB/UART0 for debug (Arduino Serial M
     #define KISS_UART_RX 0
     #define KISS_UART_TX 0
 
-    // When debug output is redirected to Serial1 (hardware UART), we MUST
-    // specify safe pins.  On the ESP32-C3 the default UART1 pins are
-    // GPIO18/19 – the same as the USB D+/D− lines.  Initializing UART1
-    // on those pins would immediately kill the USB CDC connection that KISS
-    // needs.  Use GPIO2 (RX) and GPIO4 (TX) instead.
-    #if defined(CONFIG_IDF_TARGET_ESP32C3)
-        #define DEBUG_UART_RX 2
-        #define DEBUG_UART_TX 4
-    #else
-        // Other targets: use reasonable defaults (can be overridden)
-        #define DEBUG_UART_RX -1
-        #define DEBUG_UART_TX -1
-    #endif
+    // DEBUG_UART_RX/TX are now defined above (before DebugSerialShim)
 
 #elif defined(CONFIG_IDF_TARGET_ESP32C3) || defined(CONFIG_IDF_TARGET_ESP32C5) || defined(CONFIG_IDF_TARGET_ESP32C6)
     #define KissSerial Serial1    // Use UART1 for KISS
@@ -155,6 +164,16 @@ extern DebugSerialShim DebugSerial; // Use USB/UART0 for debug (Arduino Serial M
 #define WEBSERVER_ENABLED 0
 #endif
 
+// Enable runtime JSON config persisted in LittleFS/SPIFFS
+#ifndef JSON_CONFIG_ENABLED
+#define JSON_CONFIG_ENABLED 0
+#endif
+
+// Enable secure OTA (signed updates) support (requires OTA code + signature checks)
+#ifndef OTA_ENABLED
+#define OTA_ENABLED 0
+#endif
+
 // sanity checks for feature combinations
 #if WEBSERVER_ENABLED && !JSON_CONFIG_ENABLED
     #error "WEBSERVER_ENABLED requires JSON_CONFIG_ENABLED for runtime config"
@@ -173,17 +192,6 @@ extern DebugSerialShim DebugSerial; // Use USB/UART0 for debug (Arduino Serial M
 // in the runtime JSON config the REST API will require Authorization: Bearer <token>
 #ifndef WEBSERVER_AUTH_ENABLED
 #define WEBSERVER_AUTH_ENABLED 1
-#endif
-
-// Enable runtime JSON config persisted in LittleFS/SPIFFS
-#ifndef JSON_CONFIG_ENABLED
-#define JSON_CONFIG_ENABLED 0
-#endif
-// Example path: /config.json in SPIFFS/LittleFS
-
-// Enable secure OTA (signed updates) support (requires OTA code + signature checks)
-#ifndef OTA_ENABLED
-#define OTA_ENABLED 0
 #endif
 
 // BLE provisioning (GATT) for WiFi / callsign setup
@@ -237,7 +245,7 @@ const uint16_t RNS_UDP_PORT = 4242; // Default Reticulum UDP port
 const uint8_t MAX_HOPS = 15;        // Max hop count for packets
 
 // --- Timing & Intervals (milliseconds) ---
-const uint16_t PACKET_ID_SAVE_INTERVAL = 5000; // Save counter every N packets generated (increased to reduce EEPROM wear)
+const uint16_t PACKET_ID_SAVE_INTERVAL = 100; // Save counter every N packets generated
 const unsigned long ANNOUNCE_INTERVAL_MS = 180000; // Announce every 3 minutes
 const unsigned long ROUTE_TIMEOUT_MS = ANNOUNCE_INTERVAL_MS * 3 + 15000; // Timeout after ~3 missed announces
 const unsigned long PRUNE_INTERVAL_MS = ANNOUNCE_INTERVAL_MS / 2; // Check for old routes periodically
