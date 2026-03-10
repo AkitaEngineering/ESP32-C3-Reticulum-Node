@@ -132,10 +132,11 @@ void InterfaceManager::setupWiFi() {
     
     // STA mode is required for ESP-NOW — always enable it
     WiFi.mode(WIFI_STA);
-    esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+    // ESP-NOW is latency-sensitive; modem sleep can drop/delay frames.
+    esp_wifi_set_ps(WIFI_PS_NONE);
 
-    // Only attempt AP connection if credentials are provided
-    if (strlen(WIFI_SSID) > 0 && strlen(WIFI_PASSWORD) > 0) {
+    // Only attempt AP connection if explicitly enabled and credentials are provided.
+    if (WIFI_STA_CONNECT_ENABLED && strlen(WIFI_SSID) > 0 && strlen(WIFI_PASSWORD) > 0) {
         WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
         LOG_INFO("IF: Connecting to WiFi %s", WIFI_SSID);
         int attempts = 0;
@@ -157,7 +158,11 @@ void InterfaceManager::setupWiFi() {
             LOG_WARN("IF: WiFi connection failed after %d attempts.", attempts);
         }
     } else {
-        LOG_INFO("IF: No WiFi credentials configured, skipping AP connection.");
+        if (!WIFI_STA_CONNECT_ENABLED) {
+            LOG_INFO("IF: AP connection disabled (WIFI_STA_CONNECT_ENABLED=0). Running ESP-NOW-only mode.");
+        } else {
+            LOG_INFO("IF: No WiFi credentials configured, skipping AP connection.");
+        }
         LOG_INFO("IF: WiFi radio active in STA mode for ESP-NOW.");
     }
 }
@@ -173,6 +178,8 @@ void InterfaceManager::setupESPNow() {
         } else {
             DebugSerial.print("! WARN: Failed to set WiFi channel: "); DebugSerial.println(esp_err_to_name(ch_err));
         }
+    } else {
+        DebugSerial.println("IF: ESP-NOW channel follows connected AP channel (ESP_NOW_CHANNEL=0).");
     }
 
     // Query current channel for debugging
@@ -448,7 +455,7 @@ void InterfaceManager::enableEspNow() {
     // Ensure WiFi radio is in STA mode
     if (WiFi.getMode() == WIFI_OFF) {
         WiFi.mode(WIFI_STA);
-        esp_wifi_set_ps(WIFI_PS_MIN_MODEM);
+        esp_wifi_set_ps(WIFI_PS_NONE);
     }
     setupESPNow();
 }
@@ -547,7 +554,13 @@ void InterfaceManager::printEspNowPeers() {
 }
 
 // --- Static Callbacks ---
+// ESP-IDF v5 changed the callback signature to esp_now_recv_info_t.
+#if defined(ESP_IDF_VERSION_MAJOR) && (ESP_IDF_VERSION_MAJOR >= 5)
+void InterfaceManager::staticEspNowRecvCallback(const esp_now_recv_info_t *recv_info, const uint8_t *incomingData, int len) {
+    const uint8_t* mac_addr = (recv_info != nullptr) ? recv_info->src_addr : nullptr;
+#else
 void InterfaceManager::staticEspNowRecvCallback(const uint8_t *mac_addr, const uint8_t *incomingData, int len) {
+#endif
     if (_instance && _instance->_packetReceiver && mac_addr && incomingData && len > 0) {
         if (len <= MAX_PACKET_SIZE) {
              DebugSerial.print("[ESP-NOW RX] "); DebugSerial.print(len); DebugSerial.print("B from ");

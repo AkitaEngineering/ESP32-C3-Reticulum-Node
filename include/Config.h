@@ -216,9 +216,21 @@ extern DebugSerialShim DebugSerial; // Use USB/UART0 for debug (Arduino Serial M
 #define METRICS_INTERVAL_MS (MEM_CHECK_INTERVAL_MS)
 #endif
 
-// ESP-NOW channel (0 = inherit current WiFi channel)
+// Keep WiFi radio active for ESP-NOW, but optionally skip STA/AP association.
+// 0 = ESP-NOW-only mode (default), 1 = connect to AP if credentials are set.
+#ifndef WIFI_STA_CONNECT_ENABLED
+#define WIFI_STA_CONNECT_ENABLED 0
+#endif
+
+// ESP-NOW channel selection.
+// In AP-connected mode use 0 (inherit AP channel). In ESP-NOW-only mode,
+// default to channel 1 so all nodes land on a deterministic channel.
 #ifndef ESP_NOW_CHANNEL
-#define ESP_NOW_CHANNEL 0
+    #if WIFI_STA_CONNECT_ENABLED
+        #define ESP_NOW_CHANNEL 0
+    #else
+        #define ESP_NOW_CHANNEL 1
+    #endif
 #endif
 
 // When set to a non-zero channel number, the firmware will force the WiFi

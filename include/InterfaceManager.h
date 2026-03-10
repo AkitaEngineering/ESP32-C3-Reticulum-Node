@@ -8,6 +8,7 @@
 #include <BluetoothSerial.h> // Requires CONFIG_BT_ENABLED=y and CONFIG_CLASSIC_BT_ENABLED=y in sdkconfig
 #endif
 #include <esp_now.h>
+#include <esp_idf_version.h>
 #include <functional>
 #include <vector>
 #include <IPAddress.h> // Include IPAddress
@@ -96,7 +97,11 @@ public:
     void printEspNowPeers();
 
     // Static callbacks needed for C-style APIs like ESP-NOW
+#if defined(ESP_IDF_VERSION_MAJOR) && (ESP_IDF_VERSION_MAJOR >= 5)
+    static void staticEspNowRecvCallback(const esp_now_recv_info_t *recv_info, const uint8_t *incomingData, int len);
+#else
     static void staticEspNowRecvCallback(const uint8_t *mac_addr, const uint8_t *incomingData, int len);
+#endif
     // static void staticEspNowSendCallback(const uint8_t *mac_addr, esp_now_send_status_t status); // Optional
 
 private:
