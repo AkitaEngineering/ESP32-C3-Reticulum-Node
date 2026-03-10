@@ -413,14 +413,23 @@ void ReticulumNode::handleReceivedPacket(const uint8_t *packetBuffer, size_t pac
     // Check destination: PLAIN destination (unencrypted broadcast) - compare first 8 bytes of hash
     else if (packetInfo.destination_type == RNS_DEST_PLAIN)
     {
+        bool plainMatched = false;
         for (const auto& group : _subscribedGroups) {
             // PLAIN destinations use a 16-byte hash, but we compare first 8 bytes
             if (Utils::compareAddresses(packetInfo.destination_hash, group.data())) {
                 DebugSerial.println("[Node] Packet addressed to subscribed PLAIN destination.");
                 processPacketForSelf(packetInfo, interface);
+                plainMatched = true;
                 break; // Processed locally, but MUST continue to forwarding
             }
         }
+
+#if RNS_ACCEPT_ALL_PLAIN_DESTINATIONS
+        if (!plainMatched) {
+            DebugSerial.println("[Node] Accepting PLAIN packet in indiscriminate mode.");
+            processPacketForSelf(packetInfo, interface);
+        }
+#endif
     }
 
     // --- 4. Forwarding Logic (If not single-addressed to self) ---

@@ -222,6 +222,18 @@ extern DebugSerialShim DebugSerial; // Use USB/UART0 for debug (Arduino Serial M
 #define WIFI_STA_CONNECT_ENABLED 0
 #endif
 
+// In mesh mode, broadcast all ESP-NOW payloads rather than route-unicast.
+// This makes nodes behave as symmetric transceivers and avoids route stickiness.
+#ifndef ESP_NOW_INDISCRIMINATE_BROADCAST
+#define ESP_NOW_INDISCRIMINATE_BROADCAST 1
+#endif
+
+// Accept all PLAIN destination packets locally (not only subscribed hashes).
+// Forwarding behavior is unchanged; this only affects local app consumption.
+#ifndef RNS_ACCEPT_ALL_PLAIN_DESTINATIONS
+#define RNS_ACCEPT_ALL_PLAIN_DESTINATIONS 1
+#endif
+
 // ESP-NOW channel selection.
 // In AP-connected mode use 0 (inherit AP channel). In ESP-NOW-only mode,
 // default to channel 1 so all nodes land on a deterministic channel.

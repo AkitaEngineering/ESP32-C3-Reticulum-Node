@@ -367,6 +367,9 @@ void InterfaceManager::sendPacketViaEspNow(const uint8_t *packetBuffer, size_t p
     const uint8_t* targetMac = espnow_broadcast_mac; // Default to broadcast
     RouteEntry* route = nullptr;
 
+#if ESP_NOW_INDISCRIMINATE_BROADCAST
+    (void)destinationAddr;
+#else
     if (destinationAddr != nullptr) { // If destination provided, try to find route
         route = _routingTableRef.findRoute(destinationAddr);
          if (route && route->interface == InterfaceType::ESP_NOW) {
@@ -379,6 +382,7 @@ void InterfaceManager::sendPacketViaEspNow(const uint8_t *packetBuffer, size_t p
              }
          } else { targetMac = espnow_broadcast_mac; } // No route / wrong interface
     } // else: destinationAddr is null -> use broadcastMac
+#endif
 
     esp_err_t result = esp_now_send(targetMac, packetBuffer, packetLen);
     if (result != ESP_OK) {
