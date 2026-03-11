@@ -101,11 +101,24 @@ void ReticulumNode::loadConfig() {
 }
 
 void ReticulumNode::loadOrGenerateAddress() {
-    bool needsGenerating = false;
     uint8_t storedAddr[RNS_ADDRESS_SIZE];
     for (int i = 0; i < RNS_ADDRESS_SIZE; ++i) {
         storedAddr[i] = EEPROM.read(EEPROM_ADDR_NODE + i);
     }
+
+#if NODE_ADDRESS_FROM_EFUSE
+    uint8_t derivedAddr[RNS_ADDRESS_SIZE];
+    deriveNodeAddressFromEfuse(derivedAddr);
+    memcpy(_nodeAddress, derivedAddr, RNS_ADDRESS_SIZE);
+
+    if (memcmp(storedAddr, derivedAddr, RNS_ADDRESS_SIZE) != 0) {
+        LOG_INFO("Updating EEPROM node address from unique eFuse identity.");
+        saveNodeAddress();
+    } else {
+        LOG_INFO("Loaded deterministic eFuse-derived node address.");
+    }
+#else
+    bool needsGenerating = false;
     // Check if address is all 0x00 or all 0xFF (common uninitialized states)
     bool allZeros = true;
     bool allFs = true;
@@ -125,6 +138,7 @@ void ReticulumNode::loadOrGenerateAddress() {
         memcpy(_nodeAddress, storedAddr, RNS_ADDRESS_SIZE);
         LOG_INFO("Loaded address from EEPROM.");
     }
+#endif
 }
 
 void ReticulumNode::generateNodeAddress() {
@@ -139,6 +153,28 @@ void ReticulumNode::generateNodeAddress() {
     // Ensure address is not easily guessable or problematic (like all zeros)
     if (Utils::compareAddresses(_nodeAddress, (const uint8_t*)"\x00\x00\x00\x00\x00\x00\x00\x00")) {
         _nodeAddress[0] = random(1, 256); // Ensure first byte is non-zero
+    }
+}
+
+void ReticulumNode::deriveNodeAddressFromEfuse(uint8_t outAddr[RNS_ADDRESS_SIZE]) {
+    uint64_t efuse = ESP.getEfuseMac();
+
+    // Expand 48-bit chip MAC into a stable 8-byte address using simple mixing.
+    for (int i = 0; i < RNS_ADDRESS_SIZE; ++i) {
+        uint8_t b = static_cast<uint8_t>((efuse >> ((i % 6) * 8)) & 0xFF);
+        uint8_t m = static_cast<uint8_t>((efuse >> (((i + 3) % 6) * 8)) & 0xFF);
+        outAddr[i] = static_cast<uint8_t>(b ^ ((m << 1) | (m >> 7)) ^ (0xA5u + i * 17u));
+    }
+
+    bool allZero = true;
+    for (int i = 0; i < RNS_ADDRESS_SIZE; ++i) {
+        if (outAddr[i] != 0) {
+            allZero = false;
+            break;
+        }
+    }
+    if (allZero) {
+        outAddr[0] = 0x01;
     }
 }
 

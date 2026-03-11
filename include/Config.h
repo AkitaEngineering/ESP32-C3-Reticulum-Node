@@ -293,6 +293,13 @@ extern const char *WIFI_PASSWORD; // <<< CHANGE ME in Config.cpp
 
 // --- Node Configuration ---
 extern const char *BT_DEVICE_NAME;
+
+// Derive Reticulum node address from the chip eFuse MAC on boot.
+// This prevents duplicate logical node addresses when flash/EEPROM images are cloned.
+#ifndef NODE_ADDRESS_FROM_EFUSE
+#define NODE_ADDRESS_FROM_EFUSE 1
+#endif
+
 const int EEPROM_ADDR_NODE = 0;  // 8 bytes
 const int EEPROM_ADDR_PKTID = 8; // 2 bytes (Start after node address)
 const int EEPROM_SIZE = 16;      // Min size needed (8+2 = 10, use 16 or 32)

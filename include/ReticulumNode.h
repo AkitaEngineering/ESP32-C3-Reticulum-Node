@@ -51,6 +51,7 @@ private:
     void savePacketCounterIfNeeded(); // Saves packet ID to EEPROM periodically
     void loadPacketCounter();
     void generateNodeAddress();
+    void deriveNodeAddressFromEfuse(uint8_t outAddr[RNS_ADDRESS_SIZE]);
     void saveNodeAddress();
     void printNodeAddress();
 
