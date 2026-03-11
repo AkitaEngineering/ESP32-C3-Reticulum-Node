@@ -110,6 +110,9 @@ void InterfaceManager::setup() {
 void InterfaceManager::loop() {
     cleanupExpiredEspNowAssemblies();
     processEspNowStoreForward();
+#if defined(KISS_OVER_USB)
+    flushPendingUsbKissFrames();
+#endif
 
     // Process inputs from KISS interfaces
     processSerialInput();
@@ -602,9 +605,36 @@ void InterfaceManager::sendUdpMetrics(const String &json) {
 void InterfaceManager::sendPacketViaSerial(const uint8_t *packetBuffer, size_t packetLen) {
     std::vector<uint8_t> kissEncoded;
     KISSProcessor::encode(packetBuffer, packetLen, kissEncoded);
+#if defined(KISS_OVER_USB)
+    if (!Serial) {
+        if (_pendingUsbKissFrames.size() >= MAX_PENDING_USB_KISS_FRAMES) {
+            _pendingUsbKissFrames.pop_front();
+        }
+        _pendingUsbKissFrames.push_back(std::move(kissEncoded));
+        return;
+    }
+#endif
     (void)KissSerial.write(kissEncoded.data(), kissEncoded.size()); // ignore return value
     // if(sent != kissEncoded.size()) { DebugSerial.println("! WARN: Serial write incomplete"); } // Optional check
 }
+
+#if defined(KISS_OVER_USB)
+void InterfaceManager::flushPendingUsbKissFrames() {
+    if (!Serial || _pendingUsbKissFrames.empty()) {
+        return;
+    }
+
+    while (!_pendingUsbKissFrames.empty()) {
+        const std::vector<uint8_t> &frame = _pendingUsbKissFrames.front();
+        size_t written = KissSerial.write(frame.data(), frame.size());
+        if (written != frame.size()) {
+            break;
+        }
+        _pendingUsbKissFrames.pop_front();
+    }
+}
+#endif
+
 #if BLUETOOTH_CLASSIC_AVAILABLE
 void InterfaceManager::sendPacketViaBluetooth(const uint8_t *packetBuffer, size_t packetLen) {
     if (!_serialBT.connected()) return;

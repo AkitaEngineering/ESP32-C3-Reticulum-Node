@@ -167,6 +167,9 @@ private:
     void processEspNowStoreForward();
     bool enqueueEspNowPacket(const uint8_t *packetBuffer, size_t packetLen, const uint8_t *destinationAddr);
     bool sendPacketViaEspNowInternal(const uint8_t *packetBuffer, size_t packetLen, const uint8_t *destinationAddr, bool enqueueOnFailure);
+#if defined(KISS_OVER_USB)
+    void flushPendingUsbKissFrames();
+#endif
 
     // Specific Send implementations called by public send methods
     bool sendPacketViaEspNow(const uint8_t *packetBuffer, size_t packetLen, const uint8_t *destinationAddr);
@@ -193,6 +196,10 @@ private:
     std::vector<EspNowRxAssembly> _espNowRxAssemblies;
     std::deque<EspNowQueuedPacket> _espNowStoreQueue;
     uint16_t _espNowTxMessageId = 0;
+#if defined(KISS_OVER_USB)
+    std::deque<std::vector<uint8_t>> _pendingUsbKissFrames;
+    static constexpr size_t MAX_PENDING_USB_KISS_FRAMES = 32;
+#endif
 
     WiFiUDP _udp;
 #if BLUETOOTH_CLASSIC_AVAILABLE
