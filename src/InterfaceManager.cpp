@@ -185,6 +185,25 @@ void InterfaceManager::setupWiFi() {
 void InterfaceManager::setupESPNow() {
      DebugSerial.print("IF: Device MAC: "); DebugSerial.println(WiFi.macAddress());
 
+    esp_err_t pwr_err = esp_wifi_set_max_tx_power(ESP_NOW_TX_POWER_QDBM);
+    if (pwr_err == ESP_OK) {
+        DebugSerial.print("IF: WiFi TX power set (qdbm): ");
+        DebugSerial.println(ESP_NOW_TX_POWER_QDBM);
+    } else {
+        DebugSerial.print("! WARN: Failed to set TX power: ");
+        DebugSerial.println(esp_err_to_name(pwr_err));
+    }
+
+#if ESP_NOW_ENABLE_LR
+    esp_err_t proto_err = esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G | WIFI_PROTOCOL_11N | WIFI_PROTOCOL_LR);
+    if (proto_err == ESP_OK) {
+        DebugSerial.println("IF: WiFi protocol includes 11LR for ESP-NOW");
+    } else {
+        DebugSerial.print("! WARN: Failed to enable 11LR protocol: ");
+        DebugSerial.println(esp_err_to_name(proto_err));
+    }
+#endif
+
     // Optional channel override
     if (ESP_NOW_CHANNEL != 0) {
         esp_err_t ch_err = esp_wifi_set_channel(ESP_NOW_CHANNEL, WIFI_SECOND_CHAN_NONE);

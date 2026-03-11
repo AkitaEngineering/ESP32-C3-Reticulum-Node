@@ -268,6 +268,18 @@ extern DebugSerialShim DebugSerial; // Use USB/UART0 for debug (Arduino Serial M
     #endif
 #endif
 
+// Enable 802.11 LR mode (Long Range) in addition to normal rates.
+// All nodes should use the same setting.
+#ifndef ESP_NOW_ENABLE_LR
+#define ESP_NOW_ENABLE_LR 1
+#endif
+
+// Force WiFi TX power to max for ESP-NOW reliability in noisy environments.
+// Value unit is 0.25 dBm; 84 => 21 dBm (chip/region limits still apply).
+#ifndef ESP_NOW_TX_POWER_QDBM
+#define ESP_NOW_TX_POWER_QDBM 84
+#endif
+
 // When set to a non-zero channel number, the firmware will force the WiFi
 // radio to that channel before initializing ESP-NOW. This can be useful when
 // running in AP-only or STA-only mode without joining an access point, or when
@@ -293,7 +305,10 @@ const uint8_t MAX_HOPS = 15;        // Max hop count for packets
 
 // --- Timing & Intervals (milliseconds) ---
 const uint16_t PACKET_ID_SAVE_INTERVAL = 100; // Save counter every N packets generated
-const unsigned long ANNOUNCE_INTERVAL_MS = 180000; // Announce every 3 minutes
+#ifndef ANNOUNCE_INTERVAL_DEFAULT_MS
+#define ANNOUNCE_INTERVAL_DEFAULT_MS 30000UL // Announce every 30s by default for faster route convergence
+#endif
+const unsigned long ANNOUNCE_INTERVAL_MS = ANNOUNCE_INTERVAL_DEFAULT_MS;
 const unsigned long ROUTE_TIMEOUT_MS = ANNOUNCE_INTERVAL_MS * 3 + 15000; // Timeout after ~3 missed announces
 const unsigned long PRUNE_INTERVAL_MS = ANNOUNCE_INTERVAL_MS / 2; // Check for old routes periodically
 const unsigned long MEM_CHECK_INTERVAL_MS = 15000; // Check memory every 15 seconds

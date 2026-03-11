@@ -57,8 +57,8 @@ void ReticulumNode::setup() {
 
     // Initialize timers
     _last_mem_check_time = millis();
-    // Announce sooner after boot
-    _last_announce_time = millis() - ANNOUNCE_INTERVAL_MS + random(5000, 15000); // Add random delay
+    // Announce quickly after boot to speed first route convergence.
+    _last_announce_time = millis() - ANNOUNCE_INTERVAL_MS + random(1000, 3000);
     // Ensure routing table prune timer is initialized
     _routingTable.prune(nullptr); // Initial call to set timer base
 
