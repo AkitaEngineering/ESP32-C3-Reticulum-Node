@@ -96,6 +96,8 @@ void InterfaceManager::setup() {
 }
 
 void InterfaceManager::loop() {
+    cleanupExpiredEspNowAssemblies();
+
     // Process inputs from KISS interfaces
     processSerialInput();
 #if BLUETOOTH_CLASSIC_AVAILABLE
@@ -384,12 +386,60 @@ void InterfaceManager::sendPacketViaEspNow(const uint8_t *packetBuffer, size_t p
     } // else: destinationAddr is null -> use broadcastMac
 #endif
 
-    esp_err_t result = esp_now_send(targetMac, packetBuffer, packetLen);
-    if (result != ESP_OK) {
-        if (result == ESP_ERR_ESPNOW_NO_MEM || packetLen > 250) {
-            DebugSerial.print("! ESP-NOW packet too large ("); DebugSerial.print(packetLen); DebugSerial.println(" bytes, max 250)");
-        } else {
-            DebugSerial.print("! ESP-NOW Send Error to "); Utils::printBytes(targetMac, 6, DebugSerial); DebugSerial.print(": "); DebugSerial.println(esp_err_to_name(result));
+    if (packetLen <= ESPNOW_MAX_PAYLOAD_LEN) {
+        esp_err_t result = esp_now_send(targetMac, packetBuffer, packetLen);
+        if (result != ESP_OK) {
+            if (result == ESP_ERR_ESPNOW_NO_MEM) {
+                DebugSerial.println("! ESP-NOW send out of memory for small packet");
+            } else {
+                DebugSerial.print("! ESP-NOW Send Error to "); Utils::printBytes(targetMac, 6, DebugSerial); DebugSerial.print(": "); DebugSerial.println(esp_err_to_name(result));
+            }
+        }
+        return;
+    }
+
+    const size_t maxChunk = ESPNOW_FRAG_CHUNK_DATA_LEN;
+    const size_t totalChunksSz = (packetLen + maxChunk - 1) / maxChunk;
+    if (totalChunksSz == 0 || totalChunksSz > 255) {
+        DebugSerial.print("! ESP-NOW fragmentation failed, packet too large for chunk count: ");
+        DebugSerial.println(packetLen);
+        return;
+    }
+
+    const uint8_t totalChunks = static_cast<uint8_t>(totalChunksSz);
+    _espNowTxMessageId++;
+    if (_espNowTxMessageId == 0) {
+        _espNowTxMessageId = 1;
+    }
+    const uint16_t messageId = _espNowTxMessageId;
+
+    for (uint8_t chunkIndex = 0; chunkIndex < totalChunks; ++chunkIndex) {
+        const size_t offset = static_cast<size_t>(chunkIndex) * maxChunk;
+        const size_t remaining = packetLen - offset;
+        const size_t chunkLen = remaining > maxChunk ? maxChunk : remaining;
+
+        uint8_t frame[ESPNOW_MAX_PAYLOAD_LEN];
+        frame[0] = ESPNOW_FRAG_MAGIC0;
+        frame[1] = ESPNOW_FRAG_MAGIC1;
+        frame[2] = ESPNOW_FRAG_VERSION;
+        frame[3] = static_cast<uint8_t>((messageId >> 8) & 0xFF);
+        frame[4] = static_cast<uint8_t>(messageId & 0xFF);
+        frame[5] = chunkIndex;
+        frame[6] = totalChunks;
+        frame[7] = 0;
+        memcpy(frame + ESPNOW_FRAG_HEADER_LEN, packetBuffer + offset, chunkLen);
+
+        esp_err_t result = esp_now_send(targetMac, frame, ESPNOW_FRAG_HEADER_LEN + chunkLen);
+        if (result != ESP_OK) {
+            DebugSerial.print("! ESP-NOW fragment send failed (msg=");
+            DebugSerial.print(messageId);
+            DebugSerial.print(", chunk=");
+            DebugSerial.print(chunkIndex);
+            DebugSerial.print("/");
+            DebugSerial.print(totalChunks);
+            DebugSerial.print("): ");
+            DebugSerial.println(esp_err_to_name(result));
+            return;
         }
     }
 }
@@ -544,6 +594,154 @@ bool InterfaceManager::checkEspNowPeer(const uint8_t* mac_addr) {
     // return esp_now_is_peer_exist(mac_addr); // Older IDF versions
 }
 
+bool InterfaceManager::parseEspNowFragment(const uint8_t *data, int len, uint16_t &messageId, uint8_t &chunkIndex, uint8_t &totalChunks, const uint8_t* &chunkData, size_t &chunkLen) const {
+    if (!data || len <= 0) return false;
+    if (len < static_cast<int>(ESPNOW_FRAG_HEADER_LEN)) return false;
+    if (data[0] != ESPNOW_FRAG_MAGIC0 || data[1] != ESPNOW_FRAG_MAGIC1 || data[2] != ESPNOW_FRAG_VERSION) return false;
+
+    messageId = (static_cast<uint16_t>(data[3]) << 8) | static_cast<uint16_t>(data[4]);
+    chunkIndex = data[5];
+    totalChunks = data[6];
+    if (totalChunks == 0 || chunkIndex >= totalChunks) return false;
+
+    chunkData = data + ESPNOW_FRAG_HEADER_LEN;
+    chunkLen = static_cast<size_t>(len) - ESPNOW_FRAG_HEADER_LEN;
+    return true;
+}
+
+InterfaceManager::EspNowRxAssembly* InterfaceManager::getEspNowAssemblySlot(const uint8_t *senderMac, uint16_t messageId, uint8_t totalChunks) {
+    if (!senderMac || totalChunks == 0) return nullptr;
+
+    for (auto &slot : _espNowRxAssemblies) {
+        if (slot.active && slot.messageId == messageId && slot.totalChunks == totalChunks && memcmp(slot.senderMac.data(), senderMac, 6) == 0) {
+            return &slot;
+        }
+    }
+
+    for (auto &slot : _espNowRxAssemblies) {
+        if (!slot.active) {
+            slot.active = true;
+            memcpy(slot.senderMac.data(), senderMac, 6);
+            slot.messageId = messageId;
+            slot.totalChunks = totalChunks;
+            slot.lastUpdateMs = millis();
+            slot.chunks.assign(totalChunks, std::vector<uint8_t>());
+            slot.receivedChunk.assign(totalChunks, 0);
+            slot.receivedCount = 0;
+            return &slot;
+        }
+    }
+
+    if (_espNowRxAssemblies.size() < ESPNOW_MAX_RX_ASSEMBLIES) {
+        EspNowRxAssembly slot;
+        slot.active = true;
+        memcpy(slot.senderMac.data(), senderMac, 6);
+        slot.messageId = messageId;
+        slot.totalChunks = totalChunks;
+        slot.lastUpdateMs = millis();
+        slot.chunks.assign(totalChunks, std::vector<uint8_t>());
+        slot.receivedChunk.assign(totalChunks, 0);
+        _espNowRxAssemblies.push_back(slot);
+        return &_espNowRxAssemblies.back();
+    }
+
+    size_t oldestIndex = 0;
+    unsigned long oldestTime = _espNowRxAssemblies[0].lastUpdateMs;
+    for (size_t i = 1; i < _espNowRxAssemblies.size(); ++i) {
+        if (_espNowRxAssemblies[i].lastUpdateMs < oldestTime) {
+            oldestTime = _espNowRxAssemblies[i].lastUpdateMs;
+            oldestIndex = i;
+        }
+    }
+
+    auto &slot = _espNowRxAssemblies[oldestIndex];
+    slot.active = true;
+    memcpy(slot.senderMac.data(), senderMac, 6);
+    slot.messageId = messageId;
+    slot.totalChunks = totalChunks;
+    slot.lastUpdateMs = millis();
+    slot.chunks.assign(totalChunks, std::vector<uint8_t>());
+    slot.receivedChunk.assign(totalChunks, 0);
+    slot.receivedCount = 0;
+    return &slot;
+}
+
+void InterfaceManager::handleEspNowPayload(const uint8_t *senderMac, const uint8_t *incomingData, int len) {
+    if (!_packetReceiver || !senderMac || !incomingData || len <= 0) return;
+
+    uint16_t messageId = 0;
+    uint8_t chunkIndex = 0;
+    uint8_t totalChunks = 0;
+    const uint8_t *chunkData = nullptr;
+    size_t chunkLen = 0;
+
+    if (!parseEspNowFragment(incomingData, len, messageId, chunkIndex, totalChunks, chunkData, chunkLen)) {
+        if (len <= static_cast<int>(MAX_PACKET_SIZE)) {
+            _packetReceiver(incomingData, static_cast<size_t>(len), InterfaceType::ESP_NOW, senderMac, IPAddress(), 0);
+        } else {
+            DebugSerial.print("! WARN: Oversized raw ESP-NOW payload (");
+            DebugSerial.print(len);
+            DebugSerial.println(") discarded.");
+        }
+        return;
+    }
+
+    if (totalChunks == 1) {
+        if (chunkLen <= MAX_PACKET_SIZE) {
+            _packetReceiver(chunkData, chunkLen, InterfaceType::ESP_NOW, senderMac, IPAddress(), 0);
+        }
+        return;
+    }
+
+    EspNowRxAssembly *slot = getEspNowAssemblySlot(senderMac, messageId, totalChunks);
+    if (!slot) return;
+
+    if (chunkIndex >= slot->receivedChunk.size()) return;
+    if (!slot->receivedChunk[chunkIndex]) {
+        slot->receivedChunk[chunkIndex] = 1;
+        slot->receivedCount++;
+        size_t currentLen = 0;
+        for (const auto &chunk : slot->chunks) {
+            currentLen += chunk.size();
+        }
+        if (currentLen + chunkLen > MAX_PACKET_SIZE) {
+            slot->active = false;
+            slot->chunks.clear();
+            slot->receivedChunk.clear();
+            slot->receivedCount = 0;
+            DebugSerial.println("! WARN: ESP-NOW reassembly exceeded MAX_PACKET_SIZE, dropped frame");
+            return;
+        }
+        slot->chunks[chunkIndex].assign(chunkData, chunkData + chunkLen);
+    }
+    slot->lastUpdateMs = millis();
+
+    if (slot->receivedCount == slot->totalChunks) {
+        std::vector<uint8_t> assembled;
+        assembled.reserve(MAX_PACKET_SIZE);
+        for (const auto &chunk : slot->chunks) {
+            assembled.insert(assembled.end(), chunk.begin(), chunk.end());
+        }
+        _packetReceiver(assembled.data(), assembled.size(), InterfaceType::ESP_NOW, senderMac, IPAddress(), 0);
+        slot->active = false;
+        slot->chunks.clear();
+        slot->receivedChunk.clear();
+        slot->receivedCount = 0;
+    }
+}
+
+void InterfaceManager::cleanupExpiredEspNowAssemblies() {
+    const unsigned long now = millis();
+    for (auto &slot : _espNowRxAssemblies) {
+        if (slot.active && (now - slot.lastUpdateMs) > ESPNOW_REASSEMBLY_TIMEOUT_MS) {
+            slot.active = false;
+            slot.chunks.clear();
+            slot.receivedChunk.clear();
+            slot.receivedCount = 0;
+        }
+    }
+}
+
 
 // --- Debug Helpers ---
 void InterfaceManager::printEspNowPeers() {
@@ -566,14 +764,9 @@ void InterfaceManager::staticEspNowRecvCallback(const esp_now_recv_info_t *recv_
 void InterfaceManager::staticEspNowRecvCallback(const uint8_t *mac_addr, const uint8_t *incomingData, int len) {
 #endif
     if (_instance && _instance->_packetReceiver && mac_addr && incomingData && len > 0) {
-        if (len <= MAX_PACKET_SIZE) {
-             DebugSerial.print("[ESP-NOW RX] "); DebugSerial.print(len); DebugSerial.print("B from ");
-             Utils::printBytes(mac_addr, 6, DebugSerial); DebugSerial.println();
-             // Pass to instance's packet receiver callback
-            _instance->_packetReceiver(incomingData, (size_t)len, InterfaceType::ESP_NOW, mac_addr, IPAddress(), 0);
-        } else {
-             DebugSerial.print("! WARN: Oversized ESP-NOW packet received ("); DebugSerial.print(len); DebugSerial.println(" bytes), discarding.");
-        }
+         DebugSerial.print("[ESP-NOW RX] "); DebugSerial.print(len); DebugSerial.print("B from ");
+         Utils::printBytes(mac_addr, 6, DebugSerial); DebugSerial.println();
+         _instance->handleEspNowPayload(mac_addr, incomingData, len);
     }
 }
 
