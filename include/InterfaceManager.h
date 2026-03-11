@@ -12,6 +12,7 @@
 #include <functional>
 #include <vector>
 #include <array>
+#include <deque>
 #include <IPAddress.h> // Include IPAddress
 
 #ifdef LORA_ENABLED
@@ -111,16 +112,26 @@ private:
         std::array<uint8_t, 6> senderMac = {0};
         uint16_t messageId = 0;
         uint8_t totalChunks = 0;
+        bool hasCrc = false;
+        uint32_t expectedCrc = 0;
         unsigned long lastUpdateMs = 0;
         std::vector<std::vector<uint8_t>> chunks;
         std::vector<uint8_t> receivedChunk;
         size_t receivedCount = 0;
     };
 
+    struct EspNowQueuedPacket {
+        std::vector<uint8_t> payload;
+        std::array<uint8_t, RNS_ADDRESS_SIZE> destination = {0};
+        bool hasDestination = false;
+        uint8_t attempts = 0;
+        unsigned long nextTryMs = 0;
+    };
+
     static constexpr uint8_t ESPNOW_FRAG_MAGIC0 = 0x52; // 'R'
     static constexpr uint8_t ESPNOW_FRAG_MAGIC1 = 0x4E; // 'N'
     static constexpr uint8_t ESPNOW_FRAG_VERSION = 1;
-    static constexpr size_t ESPNOW_FRAG_HEADER_LEN = 8;
+    static constexpr size_t ESPNOW_FRAG_HEADER_LEN = 12;
     static constexpr size_t ESPNOW_MAX_PAYLOAD_LEN = 250;
     static constexpr size_t ESPNOW_FRAG_CHUNK_DATA_LEN = ESPNOW_MAX_PAYLOAD_LEN - ESPNOW_FRAG_HEADER_LEN;
     static constexpr size_t ESPNOW_MAX_RX_ASSEMBLIES = 6;
@@ -149,13 +160,16 @@ private:
 #ifdef HAM_MODEM_ENABLED
     void processHAMModemInput();
 #endif
-    bool parseEspNowFragment(const uint8_t *data, int len, uint16_t &messageId, uint8_t &chunkIndex, uint8_t &totalChunks, const uint8_t* &chunkData, size_t &chunkLen) const;
+    bool parseEspNowFragment(const uint8_t *data, int len, uint16_t &messageId, uint8_t &chunkIndex, uint8_t &totalChunks, bool &hasCrc, uint32_t &expectedCrc, const uint8_t* &chunkData, size_t &chunkLen) const;
     EspNowRxAssembly* getEspNowAssemblySlot(const uint8_t *senderMac, uint16_t messageId, uint8_t totalChunks);
     void handleEspNowPayload(const uint8_t *senderMac, const uint8_t *incomingData, int len);
     void cleanupExpiredEspNowAssemblies();
+    void processEspNowStoreForward();
+    bool enqueueEspNowPacket(const uint8_t *packetBuffer, size_t packetLen, const uint8_t *destinationAddr);
+    bool sendPacketViaEspNowInternal(const uint8_t *packetBuffer, size_t packetLen, const uint8_t *destinationAddr, bool enqueueOnFailure);
 
     // Specific Send implementations called by public send methods
-    void sendPacketViaEspNow(const uint8_t *packetBuffer, size_t packetLen, const uint8_t *destinationAddr);
+    bool sendPacketViaEspNow(const uint8_t *packetBuffer, size_t packetLen, const uint8_t *destinationAddr);
     void sendPacketViaWiFi(const uint8_t *packetBuffer, size_t packetLen, const uint8_t *destinationAddr);
     void sendPacketViaSerial(const uint8_t *packetBuffer, size_t packetLen);
     void sendPacketViaBluetooth(const uint8_t *packetBuffer, size_t packetLen);
@@ -177,6 +191,7 @@ private:
     // Keep a mirror of ESP-NOW peers added so we can display/remove them
     std::vector<std::array<uint8_t,6>> _espNowPeers;
     std::vector<EspNowRxAssembly> _espNowRxAssemblies;
+    std::deque<EspNowQueuedPacket> _espNowStoreQueue;
     uint16_t _espNowTxMessageId = 0;
 
     WiFiUDP _udp;

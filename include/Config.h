@@ -228,6 +228,29 @@ extern DebugSerialShim DebugSerial; // Use USB/UART0 for debug (Arduino Serial M
 #define ESP_NOW_INDISCRIMINATE_BROADCAST 1
 #endif
 
+// Add CRC32 over fully reassembled fragmented ESP-NOW payloads.
+// This provides end-to-end integrity for the fragment set.
+#ifndef ESPNOW_FRAGMENT_CRC32_ENABLED
+#define ESPNOW_FRAGMENT_CRC32_ENABLED 1
+#endif
+
+// Enable bounded in-memory store-and-forward retries for ESP-NOW send failures.
+#ifndef ESPNOW_STORE_FORWARD_ENABLED
+#define ESPNOW_STORE_FORWARD_ENABLED 1
+#endif
+
+#ifndef ESPNOW_SF_QUEUE_SIZE
+#define ESPNOW_SF_QUEUE_SIZE 24
+#endif
+
+#ifndef ESPNOW_SF_RETRY_MS
+#define ESPNOW_SF_RETRY_MS 300
+#endif
+
+#ifndef ESPNOW_SF_MAX_ATTEMPTS
+#define ESPNOW_SF_MAX_ATTEMPTS 8
+#endif
+
 // Accept all PLAIN destination packets locally (not only subscribed hashes).
 // Forwarding behavior is unchanged; this only affects local app consumption.
 #ifndef RNS_ACCEPT_ALL_PLAIN_DESTINATIONS
