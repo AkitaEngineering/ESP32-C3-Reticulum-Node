@@ -1,9 +1,10 @@
 #include "LinkManager.h"
 #include "ReticulumNode.h"
+#include "RNSCrypto.h"
 #include "Utils.h"
-#include "InterfaceManager.h" // Needed to call sendPacketRaw via ReticulumNode
-#include <Arduino.h>          // For millis(), Serial
-#include <new>                // For std::nothrow
+#include "InterfaceManager.h"
+#include <Arduino.h>
+#include <new>
 
 LinkManager::LinkManager(ReticulumNode& owner) : _ownerRef(owner) {}
 
@@ -11,163 +12,189 @@ size_t LinkManager::getActiveLinkCount() const {
     return _activeLinks.size();
 }
 
-// Get existing link or create if possible
-LinkManager::LinkPtr LinkManager::getOrCreateLink(const uint8_t* destination, bool create) {
-    if (!destination) {
-        DebugSerial.println("! LinkManager::getOrCreateLink: Null destination provided.");
-        return nullptr;
-    }
-    std::array<uint8_t, RNS_ADDRESS_SIZE> destArray;
-    memcpy(destArray.data(), destination, RNS_ADDRESS_SIZE);
-
-    auto it = _activeLinks.find(destArray);
-    if (it != _activeLinks.end()) {
-        // Found existing link
-        // it->second->updateActivity(); // Update activity time on access? Maybe not needed here.
-        return it->second;
-    } else if (create && _activeLinks.size() < LINK_MAX_ACTIVE) {
-        // Create new link if allowed and space available
-        DebugSerial.print("LinkManager: Creating new Link object for "); Utils::printBytes(destination, RNS_ADDRESS_SIZE, DebugSerial); DebugSerial.println();
-        try {
-             // Use 'new (std::nothrow)' for slightly safer allocation check than make_shared exception
-             // Link* rawPtr = new (std::nothrow) Link(destination, *this);
-             // if (!rawPtr) {
-             //      DebugSerial.println("! ERROR: Failed to allocate memory for new Link!");
-             //      return nullptr;
-             // }
-             // LinkPtr newLink(rawPtr); // Wrap in shared_ptr
-
-             // Or stick with make_shared and handle potential exception (less common on embedded)
-             LinkPtr newLink = std::make_shared<Link>(destination, *this);
-
-             _activeLinks[destArray] = newLink; // Add to map
-             return newLink;
-        } catch (const std::bad_alloc& e) {
-             DebugSerial.println("! ERROR: std::bad_alloc creating new Link!");
-             return nullptr;
-        } catch (...) {
-             DebugSerial.println("! ERROR: Unknown exception creating new Link!");
-             return nullptr;
-        }
-    } else if (create) {
-         DebugSerial.print("! WARN: Max active links ("); DebugSerial.print(LINK_MAX_ACTIVE); DebugSerial.print(") reached. Cannot create new link to ");
-         Utils::printBytes(destination, RNS_ADDRESS_SIZE, DebugSerial); DebugSerial.println();
-    }
-    return nullptr; // Not found and not created
+LinkManager::LinkPtr LinkManager::findLink(const uint8_t link_id[16]) {
+    std::array<uint8_t, 16> key;
+    memcpy(key.data(), link_id, 16);
+    auto it = _activeLinks.find(key);
+    if (it != _activeLinks.end()) return it->second;
+    return nullptr;
 }
 
+// ========================================================================
 // Process incoming link-related packets
-void LinkManager::processPacket(const RnsPacketInfo& packetInfo, InterfaceType interface) {
-    // Link packets are identified by source address (who sent it to us)
-    LinkPtr link = getOrCreateLink(packetInfo.source, (packetInfo.context == RNS_CONTEXT_LINK_REQ));
+// ========================================================================
 
-    if (link) {
-        link->handlePacket(packetInfo);
-        // If handling the packet caused the link state to become CLOSED, pruneInactiveLinks will clean it up.
-    } else {
-         // If it wasn't a LINK_REQ or we couldn't create a link (e.g., max links reached), ignore it.
-         if (packetInfo.context != RNS_CONTEXT_LINK_REQ) {
-            DebugSerial.print("! LinkManager: Received non-REQ Link packet for unknown/uncreatable source: "); Utils::printBytes(packetInfo.source, RNS_ADDRESS_SIZE, DebugSerial); DebugSerial.println();
-         }
+void LinkManager::processPacket(const RnsPacketInfo& packetInfo, InterfaceType /*interface*/) {
+    // LINKREQUEST packets (packet_type=0x02) are handled separately
+    if (packetInfo.packet_type == RNS_PACKET_LINKREQ) {
+        handleLinkRequest(packetInfo, nullptr, 0);
+        return;
     }
+
+    // All other link packets are addressed by link_id in the destination field
+    handleLinkPacket(packetInfo);
 }
 
-// Initiate reliable data send
-bool LinkManager::sendReliableData(const uint8_t* destination, const std::vector<uint8_t>& payload) {
-    LinkPtr link = getOrCreateLink(destination, true); // Get or create link
+// ========================================================================
+// Handle incoming LINKREQUEST
+// ========================================================================
+
+void LinkManager::handleLinkRequest(const RnsPacketInfo& packetInfo,
+                                     const uint8_t* raw, size_t rawLen) {
+    // Validate payload size: [X25519_pub 32][Ed25519_sig_pub 32][signalling 3] = 67
+    if (packetInfo.data.size() != RNS_LINK_REQUEST_SIZE) {
+        DebugSerial.print("! LinkManager: Invalid LINKREQUEST size ");
+        DebugSerial.println(packetInfo.data.size());
+        return;
+    }
+
+    if (_activeLinks.size() >= LINK_MAX_ACTIVE) {
+        DebugSerial.println("! LinkManager: Max links reached, dropping LINKREQUEST");
+        return;
+    }
+
+    const uint8_t* peer_x25519_pub = packetInfo.data.data();
+    const uint8_t* peer_sig_pub = packetInfo.data.data() + 32;
+    const uint8_t* signalling = packetInfo.data.data() + 64;
+
+    // Check mode
+    uint8_t mode = RNSLink::modeFromSignalling(signalling);
+    if (mode != RNS_LINK_MODE_AES256_CBC) {
+        DebugSerial.print("! LinkManager: Unsupported link mode ");
+        DebugSerial.println(mode);
+        return;
+    }
+
+    // Compute link_id from hashable part of the LINKREQUEST packet
+    // hashable_part = (flags & 0x0F) + raw[2:] minus the MTU signalling bytes
+    // Since we're in deserialized form, reconstruct the hashable part:
+    // For a Header Type 1 LINKREQUEST: [flags 1][hops 1][dest_hash 16][context 1][data 67]
+    // hashable = (flags & 0x0F) + dest_hash(16) + context(1) + data_without_signalling(64)
+    // = 1 + 16 + 1 + 64 = 82 bytes
+    uint8_t hashable[82];
+    size_t h_off = 0;
+
+    // Reconstruct flags byte: header_type=0 (bits 6-7), packet_type=LINKREQ=0x02 (bits 0-1),
+    //                          dest_type=SINGLE=0x00 (bits 2-3)
+    uint8_t flags = (packetInfo.packet_type & 0x03) |
+                    ((packetInfo.destination_type & 0x03) << 2) |
+                    ((packetInfo.propagation_type & 0x01) << 4) |
+                    ((packetInfo.context_flag ? 1 : 0) << 5);
+    hashable[h_off++] = flags & 0x0F;  // Only lower nibble for hashing
+
+    // dest_hash (16 bytes)
+    memcpy(hashable + h_off, packetInfo.destination, 16); h_off += 16;
+
+    // context byte
+    hashable[h_off++] = packetInfo.context;
+
+    // Data without signalling (first 64 bytes = X25519_pub + Ed25519_sig_pub)
+    memcpy(hashable + h_off, packetInfo.data.data(), 64); h_off += 64;
+
+    uint8_t link_id[16];
+    RNSIdentity::truncated_hash(hashable, h_off, link_id);
+
+    DebugSerial.print("[LinkManager] LINKREQUEST received, link_id=");
+    Utils::printBytes(link_id, 16, DebugSerial);
+    DebugSerial.println();
+
+    // Check if we already have this link
+    if (findLink(link_id)) {
+        DebugSerial.println("[LinkManager] Duplicate LINKREQUEST, ignoring");
+        return;
+    }
+
+    // Create new link as responder
+    RNSCrypto& identity = getIdentity();
+    auto link = std::make_shared<RNSLink>(link_id, peer_x25519_pub, peer_sig_pub, *this, identity);
+
+    // Perform ECDH handshake
+    if (!link->handshake()) {
+        DebugSerial.println("! LinkManager: handshake failed");
+        return;
+    }
+
+    // Send proof
+    if (!link->prove()) {
+        DebugSerial.println("! LinkManager: prove failed");
+        return;
+    }
+
+    // Register the link (in HANDSHAKE state, waiting for LRRTT)
+    std::array<uint8_t, 16> key;
+    memcpy(key.data(), link_id, 16);
+    _activeLinks[key] = link;
+
+    DebugSerial.println("[LinkManager] Link registered (HANDSHAKE), awaiting LRRTT");
+}
+
+// ========================================================================
+// Handle link-addressed packets (LRPROOF, LRRTT, DATA, KEEPALIVE, etc.)
+// ========================================================================
+
+void LinkManager::handleLinkPacket(const RnsPacketInfo& packetInfo) {
+    // For link-addressed packets, the destination field IS the link_id
+    auto link = findLink(packetInfo.destination);
     if (!link) {
-         DebugSerial.println("! LinkManager::sendReliableData failed: Cannot get/create Link.");
-         return false;
+        // Not found — could be LRPROOF for an initiator link (look up by link_id)
+        // (initiator outbound links would also be in _activeLinks)
+        return;
     }
 
-    // If link is closed, try establishing it first
-    if (!link->isActive()) { // Checks if state == CLOSED
-        DebugSerial.println("LinkManager::sendReliableData: Link is inactive, attempting establishment.");
-        if (!link->establish()) {
-             // Establish might fail if state wasn't CLOSED or serialize failed
-             DebugSerial.println("! ERROR: LinkManager::sendReliableData failed to initiate link establishment.");
-             // Maybe remove the failed link attempt? Let prune handle it.
-             return false;
-        }
-         DebugSerial.println("Link establishment initiated. Try sending data again after ESTABLISHED.");
-         return false; // Indicate send didn't happen now
-    }
+    link->handlePacket(packetInfo);
 
-    // If link is established, attempt to send data
-    if (link->isEstablished()) {
-        return link->sendData(payload); // Returns true if send attempt initiated
-    } else {
-        // Link is pending or closing, cannot send data now
-        DebugSerial.println("! LinkManager::sendReliableData failed: Link not established yet (pending/closing).");
-        return false;
+    // Prune if link closed
+    if (link->getState() == RNSLinkState::CLOSED) {
+        std::array<uint8_t, 16> key;
+        memcpy(key.data(), link->getLinkId(), 16);
+        _activeLinks.erase(key);
     }
 }
 
-// Periodically check timeouts for all active links
+// ========================================================================
+// Periodic maintenance
+// ========================================================================
+
 void LinkManager::checkAllTimeouts() {
-    // Use safe iteration because Link::checkTimeouts might trigger Link::teardown,
-    // which now sets the state to CLOSED, allowing pruneInactiveLinks to remove it later.
     for (auto it = _activeLinks.begin(); it != _activeLinks.end(); ++it) {
         it->second->checkTimeouts();
     }
-    // Prune links marked as CLOSED or inactive after checking timeouts
-    pruneInactiveLinks();
+    pruneClosedLinks();
 }
 
-// Clean up links that are CLOSED or haven't been active
-void LinkManager::pruneInactiveLinks() {
-    unsigned long now = millis();
-     for (auto it = _activeLinks.begin(); it != _activeLinks.end(); /* manual increment */ ) {
-         bool remove_it = false;
-         if (!it->second->isActive()) { // Check if state is CLOSED
-              // DebugSerial.print("Pruning explicitly closed link: "); Utils::printBytes(it->first.data(), RNS_ADDRESS_SIZE, DebugSerial); DebugSerial.println(); // Verbose
-              remove_it = true;
-         } else if (now - it->second->getLastActivityTime() > LINK_INACTIVITY_TIMEOUT_MS) {
-              DebugSerial.print("! Link Inactivity timeout: "); Utils::printBytes(it->first.data(), RNS_ADDRESS_SIZE, DebugSerial); DebugSerial.println();
-              it->second->teardown(); // Set state to CLOSED, doesn't remove from map directly
-              remove_it = true; // Mark for removal
-         }
-
-         if (remove_it) {
-             it = _activeLinks.erase(it); // Erase and get iterator to next
-         } else {
-             ++it; // Only increment if not erased
-         }
-     }
+void LinkManager::pruneClosedLinks() {
+    for (auto it = _activeLinks.begin(); it != _activeLinks.end(); ) {
+        if (it->second->getState() == RNSLinkState::CLOSED) {
+            it = _activeLinks.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
-
-// Explicitly remove a link (e.g., called by Link on CLOSE_ACK or teardown)
-void LinkManager::removeLink(const uint8_t* destination) {
-     if (!destination) return;
-     std::array<uint8_t, RNS_ADDRESS_SIZE> destArray;
-     memcpy(destArray.data(), destination, RNS_ADDRESS_SIZE);
-
-     auto it = _activeLinks.find(destArray);
-     if (it != _activeLinks.end()) {
-          DebugSerial.print("LinkManager removing link: "); Utils::printBytes(destination, RNS_ADDRESS_SIZE, DebugSerial); DebugSerial.println();
-          // Set state to closed just in case before erasing
-          it->second->teardown(); // Ensure state is CLOSED
-          _activeLinks.erase(it);
-     } else {
-         // DebugSerial.print("LinkManager removeLink: Link not found for "); Utils::printBytes(destination, RNS_ADDRESS_SIZE, DebugSerial); DebugSerial.println(); // Verbose
-     }
+void LinkManager::removeLink(const uint8_t link_id[16]) {
+    std::array<uint8_t, 16> key;
+    memcpy(key.data(), link_id, 16);
+    auto it = _activeLinks.find(key);
+    if (it != _activeLinks.end()) {
+        it->second->close(false);
+        _activeLinks.erase(it);
+    }
 }
 
-// --- Pass-through methods for Link instances ---
+// --- Pass-through methods for RNSLink instances ---
 const uint8_t* LinkManager::getNodeAddress() const { return _ownerRef.getNodeAddress(); }
 uint16_t LinkManager::getNextPacketId() { return _ownerRef.getNextPacketId(); }
 
-// Send packet via the main node's interface manager
 void LinkManager::sendPacketRaw(const uint8_t* buffer, size_t len, const uint8_t* destination) {
     if (!buffer || len == 0 || !destination) return;
-    // Link layer packets generally bypass high-level routing and go direct if possible.
-    // Use the InterfaceManager's sendPacket which uses the routing table.
-    // This ensures links can be established even if only broadcast path exists initially.
-     _ownerRef.getInterfaceManager().sendPacket(buffer, len, destination, InterfaceType::UNKNOWN);
+    _ownerRef.getInterfaceManager().sendPacket(buffer, len, destination, InterfaceType::UNKNOWN);
 }
 
-// Callback called by Link instances when data is successfully received and acknowledged
-void LinkManager::processReceivedLinkData(const uint8_t* source_address, const std::vector<uint8_t>& data) {
-    _ownerRef.processAppData(source_address, data); // Pass data up to the main node's app handler
+void LinkManager::processReceivedLinkData(const uint8_t* link_id, const std::vector<uint8_t>& data) {
+    _ownerRef.processAppData(link_id, data);
+}
+
+RNSCrypto& LinkManager::getIdentity() {
+    return _ownerRef.getIdentity();
 }

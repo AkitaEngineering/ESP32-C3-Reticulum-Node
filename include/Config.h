@@ -494,21 +494,7 @@ enum class InterfaceType {
 #define RNS_CONTEXT_LRRTT          0xFE  // Link request round-trip time
 #define RNS_CONTEXT_LRPROOF        0xFF  // Link request proof
 
-// --- Legacy / node-specific context aliases for the custom link layer ---
-// These map to the official context values where possible.
-// The custom link layer on this node uses a simplified handshake that
-// is NOT compatible with the full RNS link protocol (X25519 + Ed25519
-// ECDH handshake).  These aliases are kept so that the existing
-// simplified link code still compiles, but packets using them will NOT
-// be understood by reference Reticulum peers.
-#define RNS_CONTEXT_LINK_REQ    0xA1  // Custom: simplified link request (node-local)
-#define RNS_CONTEXT_LINK_CLOSE  0xA2  // Custom: simplified link close  (node-local)
-#define RNS_CONTEXT_LINK_DATA   0xA3  // Custom: simplified link data   (node-local)
-#define RNS_CONTEXT_ACK         0xA4  // Custom: simplified ACK         (node-local)
 #define RNS_CONTEXT_LOCAL_CMD   0xB0  // Local commands via KISS (node-specific, never on-air)
-
-// Sequence number size (placed at start of payload for LINK_DATA/ACK)
-const size_t RNS_SEQ_SIZE = 2;
 
 
 #endif // CONFIG_H

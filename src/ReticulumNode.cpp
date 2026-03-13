@@ -419,14 +419,15 @@ void ReticulumNode::handleReceivedPacket(const uint8_t *packetBuffer, size_t pac
     }
 
     // --- 1. Link Layer Packet Handling ---
-    if (packetInfo.context == RNS_CONTEXT_LINK_REQ ||
-        packetInfo.context == RNS_CONTEXT_LINK_CLOSE ||
-        packetInfo.context == RNS_CONTEXT_LINK_DATA ||
-        packetInfo.context == RNS_CONTEXT_ACK)
-    {
-        // DebugSerial.println("Node: Passing packet to Link Manager."); // Verbose
-        _linkManager.processPacket(packetInfo, interface);
-        return; // Link manager handles these exclusively
+    // LINKREQUEST packets: initiates a new link handshake
+    if (packetInfo.packet_type == RNS_PACKET_LINKREQ) {
+        _linkManager.handleLinkRequest(packetInfo, packetBuffer, packetLen);
+        return;
+    }
+    // All packets addressed to a LINK destination (LRPROOF, data, keepalive, close, RTT)
+    if (packetInfo.destination_type == RNS_DEST_LINK) {
+        _linkManager.handleLinkPacket(packetInfo);
+        return;
     }
 
     // --- 2. Announce Packet Handling ---
@@ -533,13 +534,9 @@ void ReticulumNode::processPacketForSelf(const RnsPacketInfo& packetInfo, Interf
             }
 
             if (!handled) {
-                DebugSerial.print("> CMD: Send Reliable to "); Utils::printBytes(targetDest, RNS_ADDRESS_SIZE, DebugSerial);
+                DebugSerial.print("> CMD: Unrecognised local command, dest=");
+                Utils::printBytes(targetDest, RNS_ADDRESS_SIZE, DebugSerial);
                 DebugSerial.print(" DataLen="); DebugSerial.println(actualPayload.size());
-
-                // Initiate reliable send via LinkManager
-                if (!_linkManager.sendReliableData(targetDest, actualPayload)) {
-                     DebugSerial.println("! CMD Failed: Could not initiate reliable send.");
-                }
             }
 
         } else {

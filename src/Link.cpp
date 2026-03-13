@@ -1,496 +1,566 @@
 #include "Link.h"
-#include "LinkManager.h" // Include owner class definition
+#include "LinkManager.h"
+#include "RNSCrypto.h"
 #include "ReticulumPacket.h"
 #include "Utils.h"
-#include <Arduino.h> // For millis(), Serial, isprint
+#include <Arduino.h>
 
-Link::Link(const uint8_t* destination, LinkManager& owner) :
-    _ownerRef(owner), _state(LinkState::CLOSED), _lastActivityTime(0), _stateTimer(0),
-    _outgoingSequence(0), _expectedIncomingSequence(0), _linkReqPacketId(0), _currentRetryCount(0)
+// ========================================================================
+// Signalling byte helpers (matches RNS/Link.py signalling_bytes / mode_from_*)
+// ========================================================================
+
+void RNSLink::buildSignallingBytes(uint8_t out[3], uint32_t mtu, uint8_t mode) {
+    // signalling_value = (mtu & 0x1FFFFF) + (((mode<<5) & 0xE0) << 16)
+    uint32_t val = (mtu & 0x1FFFFF) | (((uint32_t)(mode << 5) & 0xE0) << 16);
+    // Pack as 4-byte big-endian then take last 3 bytes
+    out[0] = (val >> 16) & 0xFF;
+    out[1] = (val >> 8) & 0xFF;
+    out[2] = val & 0xFF;
+}
+
+uint32_t RNSLink::mtuFromSignalling(const uint8_t sig[3]) {
+    uint32_t val = ((uint32_t)sig[0] << 16) | ((uint32_t)sig[1] << 8) | sig[2];
+    return val & 0x1FFFFF;
+}
+
+uint8_t RNSLink::modeFromSignalling(const uint8_t sig[3]) {
+    uint32_t val = ((uint32_t)sig[0] << 16) | ((uint32_t)sig[1] << 8) | sig[2];
+    return (uint8_t)((val >> 16) & 0xE0) >> 5;
+}
+
+// ========================================================================
+// Constructors
+// ========================================================================
+
+// RESPONDER constructor: created when an incoming LINKREQUEST is received
+RNSLink::RNSLink(const uint8_t link_id[16],
+                  const uint8_t peer_pub[32],
+                  const uint8_t peer_sig_pub[32],
+                  LinkManager& owner,
+                  RNSCrypto& identity)
+    : _initiator(false), _state(RNSLinkState::PENDING),
+      _ownerRef(owner), _identityRef(identity),
+      _keys_derived(false), _mtu(RNS_MTU),
+      _mode(RNS_LINK_MODE_AES256_CBC),
+      _lastActivityTime(millis()), _requestTime(millis()),
+      _rtt(0), _rttMeasured(false)
 {
-    if(destination){
-        memcpy(_destinationAddress.data(), destination, RNS_ADDRESS_SIZE);
-    } else {
-        DebugSerial.println("! FATAL: Link created with null destination!");
-        // Ensure state reflects error
-        _state = LinkState::CLOSED;
-        memset(_destinationAddress.data(), 0xFF, RNS_ADDRESS_SIZE); // Mark as invalid?
-    }
-    _lastActivityTime = millis(); // Initialize activity time
-     // Initialize sequence numbers randomly? Recommended by RNS spec.
-    // randomSeed(analogRead(A0) ^ millis()); // Ensure seeded somewhere
-    // _outgoingSequence = random(0, 0xFFFF);
-    // Start at 0 for easier debugging.
+    memcpy(_link_id, link_id, 16);
+    memcpy(_peer_x25519_pub, peer_pub, 32);
+    memcpy(_peer_sig_pub, peer_sig_pub, 32);
+    memset(_dest_hash, 0, 16);
+    memset(_dest_pub_key, 0, 64);
+
+    // Generate ephemeral X25519 keypair for this link
+    esp_fill_random(_x25519_priv, 32);
+    crypto_x25519_public_key(_x25519_pub, _x25519_priv);
+
+    // Responder uses node identity's Ed25519 key for signing the proof
+    // (stored in _sig_priv/_sig_pub but populated from RNSCrypto)
+    // We'll use _identityRef.sign() directly in prove()
+    memset(_sig_priv, 0, 64);
+    memset(_sig_pub, 0, 32);
+    memset(_sig_seed, 0, 32);
 }
 
-Link::~Link() {
-    // DebugSerial.print("Link destructor: "); Utils::printBytes(_destinationAddress.data(), RNS_ADDRESS_SIZE, DebugSerial); DebugSerial.println();
+// INITIATOR constructor: created when we want to establish a link to a destination
+RNSLink::RNSLink(const uint8_t dest_hash[16],
+                  const uint8_t dest_pub_key[64],
+                  LinkManager& owner,
+                  RNSCrypto& identity)
+    : _initiator(true), _state(RNSLinkState::PENDING),
+      _ownerRef(owner), _identityRef(identity),
+      _keys_derived(false), _mtu(RNS_MTU),
+      _mode(RNS_LINK_MODE_AES256_CBC),
+      _lastActivityTime(millis()), _requestTime(0),
+      _rtt(0), _rttMeasured(false)
+{
+    memset(_link_id, 0, 16);  // Will be computed after packing
+    memset(_peer_x25519_pub, 0, 32);
+    memset(_peer_sig_pub, 0, 32);
+    memcpy(_dest_hash, dest_hash, 16);
+    memcpy(_dest_pub_key, dest_pub_key, 64);
+
+    // Generate ephemeral X25519 keypair
+    esp_fill_random(_x25519_priv, 32);
+    crypto_x25519_public_key(_x25519_pub, _x25519_priv);
+
+    // Generate ephemeral Ed25519 keypair (initiator uses random, not node identity)
+    esp_fill_random(_sig_seed, 32);
+    crypto_eddsa_key_pair(_sig_priv, _sig_pub, _sig_seed);
 }
 
-// Public method to initiate link establishment
-bool Link::establish() {
-    if (_state != LinkState::CLOSED) {
-        // If already pending or established, report success (or no-op)
-        if(_state == LinkState::PENDING_REQ || _state == LinkState::ESTABLISHED) return true;
-        DebugSerial.println("Link::establish called but state not CLOSED.");
-        return false;
-    }
-    DebugSerial.print("Link::establish to "); Utils::printBytes(_destinationAddress.data(), RNS_ADDRESS_SIZE, DebugSerial); DebugSerial.println();
-    sendLinkRequest(); // Send the actual request packet
-    // Return value indicates if sending was attempted, not if established yet
-    return (_state == LinkState::PENDING_REQ); // Should be PENDING_REQ if sendLinkRequest succeeded
+RNSLink::~RNSLink() {
+    wipeKeys();
 }
 
-// Helper: build link-layer payload prefix [SOURCE 8][PACKET_ID 2][SEQ_NUM 2][APP_DATA...]
-static std::vector<uint8_t> buildLinkPayload(const uint8_t* source, uint16_t packet_id,
-                                              uint16_t seq, const std::vector<uint8_t>& app = {}) {
-    std::vector<uint8_t> p;
-    p.reserve(RNS_ADDRESS_SIZE + 4 + app.size());
-    p.insert(p.end(), source, source + RNS_ADDRESS_SIZE);
-    p.push_back((packet_id >> 8) & 0xFF);
-    p.push_back(packet_id & 0xFF);
-    p.push_back((seq >> 8) & 0xFF);
-    p.push_back(seq & 0xFF);
-    if (!app.empty()) p.insert(p.end(), app.begin(), app.end());
-    return p;
+void RNSLink::wipeKeys() {
+    crypto_wipe(_x25519_priv, 32);
+    crypto_wipe(_sig_priv, 64);
+    crypto_wipe(_sig_seed, 32);
+    crypto_wipe(_derived_key, 64);
+    _keys_derived = false;
 }
 
-// Helper: pad 8-byte address into 16-byte destination hash
-static void padDestHash(const uint8_t* addr8, uint8_t* hash16) {
-    memset(hash16, 0, RNS_TRUNCATED_HASHLENGTH_BYTES);
-    memcpy(hash16, addr8, RNS_ADDRESS_SIZE);
-}
+// ========================================================================
+// Initiator: establish() — send LINKREQUEST packet
+// ========================================================================
 
-// Internal: Sends the LINK_REQ packet
-void Link::sendLinkRequest() {
-    // State should be CLOSED before calling, set PENDING now
-    _state = LinkState::PENDING_REQ;
-    _linkReqPacketId = _ownerRef.getNextPacketId();
+bool RNSLink::establish() {
+    if (!_initiator) return false;
+    if (_state != RNSLinkState::PENDING) return false;
 
-    auto linkData = buildLinkPayload(_ownerRef.getNodeAddress(), _linkReqPacketId, 0);
-    uint8_t destHash[RNS_TRUNCATED_HASHLENGTH_BYTES];
-    padDestHash(_destinationAddress.data(), destHash);
+    // Build link request data: [X25519_pub 32][Ed25519_sig_pub 32][signalling 3]
+    uint8_t request_data[RNS_LINK_REQUEST_SIZE];
+    memcpy(request_data, _x25519_pub, 32);
+    memcpy(request_data + 32, _sig_pub, 32);
+    buildSignallingBytes(request_data + 64, _mtu, _mode);
 
+    // Serialize as LINKREQUEST packet (packet_type=0x02)
+    std::vector<uint8_t> payload(request_data, request_data + RNS_LINK_REQUEST_SIZE);
     uint8_t buffer[MAX_PACKET_SIZE];
     size_t len = 0;
     bool ok = ReticulumPacket::serialize(buffer, len,
-        destHash, RNS_PACKET_DATA, RNS_DEST_LINK,
-        RNS_PROPAGATION_BROADCAST, RNS_CONTEXT_LINK_REQ, 0, linkData);
+        _dest_hash,
+        RNS_PACKET_LINKREQ,    // packet_type = LINKREQUEST
+        RNS_DEST_SINGLE,       // destination type
+        RNS_PROPAGATION_BROADCAST,
+        RNS_CONTEXT_NONE,      // No special context for LINKREQUEST
+        0,                     // hops
+        payload);
 
-    if (ok) {
-        _ownerRef.sendPacketRaw(buffer, len, _destinationAddress.data());
-        _stateTimer = millis(); // Start timeout timer for REQ ACK
-        _currentRetryCount = 0;
-        updateActivity();
-        // DebugSerial.println("Link Request sent."); // Verbose
-    } else {
-        DebugSerial.println("! ERROR: Link::sendLinkRequest serialize failed!");
-        teardown(); // Failed to send, cannot establish
-    }
-}
-
-// Public method to send application data reliably
-bool Link::sendData(const std::vector<uint8_t>& dataPayload) {
-    if (_state != LinkState::ESTABLISHED) {
-         DebugSerial.println("! Link::sendData failed: Link not established.");
-         return false;
-    }
-    // Enforce simplified window size of 1
-    if (!_pendingOutgoingPackets.empty()) {
-         DebugSerial.println("! Link::sendData failed: Link busy (awaiting ACK).");
-         return false; // Wait for previous ACK
-    }
-    // buildLinkPayload adds SOURCE(8) + PACKET_ID(2) + SEQ(2) = 12 bytes overhead
-    const size_t LINK_OVERHEAD = RNS_ADDRESS_SIZE + 4;
-    if (dataPayload.size() > RNS_MAX_PAYLOAD - LINK_OVERHEAD) {
-        DebugSerial.println("! Link::sendData failed: Payload too large.");
+    if (!ok) {
+        DebugSerial.println("! RNSLink::establish: serialize failed");
+        _state = RNSLinkState::CLOSED;
         return false;
     }
 
-    // Prepare packet info
-    RnsPacketInfo packetInfo;
-    packetInfo.context = RNS_CONTEXT_LINK_DATA;
-    memcpy(packetInfo.destination, _destinationAddress.data(), RNS_ADDRESS_SIZE);
-    packetInfo.data = dataPayload; // Store actual data payload
-    packetInfo.sequence_number = _outgoingSequence; // Use current sequence number
+    // Compute link_id from the hashable part of the raw packet
+    // hashable_part = (flags & 0x0F) + raw[2:]  (for Header Type 1)
+    // But we must strip the MTU signalling bytes from the end
+    // link_id = truncated_hash(hashable_part without last LINK_MTU_SIZE bytes)
+    {
+        uint8_t hashable[MAX_PACKET_SIZE];
+        hashable[0] = buffer[0] & 0x0F;  // flags masked
+        size_t hashable_len = 1 + (len - 2);  // skip flags+hops bytes
+        memcpy(hashable + 1, buffer + 2, len - 2);
 
-    // Increment sequence number *after* assigning it for this packet
-    _outgoingSequence++;
+        // Strip MTU signalling (last 3 bytes of data = last LINK_MTU_SIZE of hashable)
+        hashable_len -= RNS_LINK_MTU_SIZE;
 
-    // Add to queue, serialize, send, start timers
-    sendPacketInternal(packetInfo);
-    return true; // Indicates send attempt was initiated
-}
-
-// Internal: Adds packet to queue, sends, starts timers
-void Link::sendPacketInternal(const RnsPacketInfo& packetInfo) {
-     if (_pendingOutgoingPackets.size() >= 1) { // Re-check window size
-        DebugSerial.println("! Link::sendPacketInternal failed: Window full.");
-        return;
-     }
-
-    PendingPacket pending;
-    pending.packetInfo = packetInfo; // Copy packet info
-    pending.packetInfo.packet_id = _ownerRef.getNextPacketId(); // Unique ID for *this* transmission
-    pending.firstSentTime = millis();
-    pending.lastSentTime = pending.firstSentTime;
-    // pending.retryCount = 0; // Retry count is tracked by _currentRetryCount
-
-    // Build link payload: [SOURCE 8][PACKET_ID 2][SEQ_NUM 2][APP_DATA...]
-    auto linkData = buildLinkPayload(_ownerRef.getNodeAddress(),
-        pending.packetInfo.packet_id, pending.packetInfo.sequence_number,
-        pending.packetInfo.data);
-    uint8_t destHash[RNS_TRUNCATED_HASHLENGTH_BYTES];
-    padDestHash(pending.packetInfo.destination, destHash);
-
-    uint8_t buffer[MAX_PACKET_SIZE];
-    size_t len = 0;
-    bool ok = ReticulumPacket::serialize(buffer, len,
-        destHash, RNS_PACKET_DATA, RNS_DEST_LINK,
-        RNS_PROPAGATION_BROADCAST, pending.packetInfo.context, 0, linkData);
-
-    if (ok) {
-        _pendingOutgoingPackets.push_back(pending);
-        _ownerRef.sendPacketRaw(buffer, len, pending.packetInfo.destination);
-        _stateTimer = millis(); // Start/reset retransmission timer
-        _currentRetryCount = 0; // Reset overall retry count for this attempt
-        updateActivity();
-        // DebugSerial.print("Link::sendPacketInternal sent seq "); DebugSerial.println(pending.packetInfo.sequence_number); // Verbose
-    } else {
-         DebugSerial.println("! ERROR: Link::sendPacketInternal serialize failed!");
-         // Consider tearing down the link if core serialization fails
-         teardown();
-    }
-}
-
-// Main state machine for processing incoming packets relevant to this link
-void Link::handlePacket(const RnsPacketInfo& packetInfo) {
-    if (!packetInfo.valid) {
-        DebugSerial.println("! Link::handlePacket received invalid packet info. Ignoring.");
-        return;
-    }
-    updateActivity(); // Mark link as active
-
-    // --- Handle ACKs ---
-    // ACKs identified by context field
-    if (packetInfo.context == RNS_CONTEXT_ACK) {
-        processAck(packetInfo);
-        return; // ACK processing is terminal for this packet
+        RNSIdentity::truncated_hash(hashable, hashable_len, _link_id);
     }
 
-    // --- State-Specific Handling ---
-    switch (_state) {
-        case LinkState::CLOSED:
-            // Only respond to Link Requests when closed
-            if (packetInfo.context == RNS_CONTEXT_LINK_REQ) {
-                processLinkRequest(packetInfo);
-            } else { /* Ignore other packets */ }
-            break;
+    _ownerRef.sendPacketRaw(buffer, len, _dest_hash);
+    _requestTime = millis();
+    updateActivity();
 
-        case LinkState::PENDING_REQ:
-            // Waiting for ACK to our Link Request (handled by processAck)
-            // If we receive another Link Request, peer might not have received ours or ACK lost
-            if (packetInfo.context == RNS_CONTEXT_LINK_REQ) {
-                 DebugSerial.println("Link(PENDING): Received concurrent LINK_REQ. Sending ACK.");
-                 sendAck(0); // ACK their REQ (seq 0 for control packets)
-                 // Should we transition to ESTABLISHED here? RNS spec suggests yes.
-                 _state = LinkState::ESTABLISHED;
-                 _expectedIncomingSequence = 0; // Assume peer starts at 0
-                 _outgoingSequence = 0;         // Reset our sequence too
-                 clearPendingQueue();
-                 _stateTimer = 0; // Stop REQ timer
-                 DebugSerial.println("Link Established (from Pending by concurrent REQ).");
-            } // Ignore other packets like DATA until established
-            break;
+    DebugSerial.print("[Link] LINKREQUEST sent, link_id=");
+    Utils::printBytes(_link_id, 16, DebugSerial);
+    DebugSerial.println();
 
-        case LinkState::ESTABLISHED:
-            // Handle Data, new REQ (peer reset?), or Close request
-            if (packetInfo.context == RNS_CONTEXT_LINK_DATA) {
-                processData(packetInfo);
-            } else if (packetInfo.context == RNS_CONTEXT_LINK_REQ) {
-                 DebugSerial.println("Link(ESTABLISHED): Received LINK_REQ. Re-sending ACK.");
-                 sendAck(0); // Re-ACK their REQ
-                 // Maybe reset expected sequence? Assume peer restarted.
-                 _expectedIncomingSequence = 0;
-            } else if (packetInfo.context == RNS_CONTEXT_LINK_CLOSE) {
-                 processLinkClose(packetInfo);
-            } // Ignore other unexpected packets
-            break;
-
-        case LinkState::CLOSING:
-             // Waiting for ACK to our Link Close request (handled by processAck)
-             // Ignore anything else.
-             break;
-    }
-}
-
-// Handle incoming LINK_REQ packet
-void Link::processLinkRequest(const RnsPacketInfo& reqPacket) {
-     // Can be received in CLOSED or ESTABLISHED state
-     DebugSerial.print("Link::processLinkRequest from "); Utils::printBytes(reqPacket.source, RNS_ADDRESS_SIZE, DebugSerial); DebugSerial.println();
-     sendAck(0); // ACK the control packet (seq 0)
-
-     // Transition to ESTABLISHED
-     if (_state == LinkState::CLOSED) {
-         _expectedIncomingSequence = 0;
-         _outgoingSequence = 0;
-         clearPendingQueue();
-         _state = LinkState::ESTABLISHED;
-         DebugSerial.println("Link Established (from Closed by REQ).");
-     } else { // Was ESTABLISHED already
-          DebugSerial.println("Link Re-Established (ACKed REQ).");
-          // Optionally reset sequences if needed based on protocol interpretation
-          // _expectedIncomingSequence = 0;
-          // _outgoingSequence = 0;
-          // clearPendingQueue();
-     }
-}
-
-// Handle incoming ACK packet
-void Link::processAck(const RnsPacketInfo& ackPacket) {
-    uint16_t ackedSequence = ackPacket.sequence_number; // Seq num is in payload for ACKs
-
-    if (_state == LinkState::PENDING_REQ) {
-        // Expecting ACK for LINK_REQ (which used packet_id matching, conceptually seq 0)
-        if (ackedSequence == 0) { // Check if ACK matches the control packet pseudo-sequence
-             DebugSerial.println("Link(PENDING): Link Request ACK received.");
-             _state = LinkState::ESTABLISHED;
-             _expectedIncomingSequence = 0;
-             _outgoingSequence = 0;
-             clearPendingQueue();
-             _stateTimer = 0; // Stop REQ timer
-             DebugSerial.println("Link Established.");
-        } else {
-             DebugSerial.print("! Link(PENDING): Received ACK with unexpected seq: "); DebugSerial.println(ackedSequence);
-        }
-    } else if (_state == LinkState::ESTABLISHED) {
-        // Expecting ACK for a data packet
-        if (!_pendingOutgoingPackets.empty()) {
-            PendingPacket& frontPacket = _pendingOutgoingPackets.front();
-            if (ackedSequence == frontPacket.packetInfo.sequence_number) {
-                 // Correct ACK received
-                 // DebugSerial.print("Link(ESTABLISHED): ACK received for data seq: "); DebugSerial.println(ackedSequence); // Verbose
-                 _pendingOutgoingPackets.pop_front(); // Remove acknowledged packet
-                 _currentRetryCount = 0; // Reset overall retries for the link
-                 _stateTimer = 0; // Stop retransmission timer until next send
-                 // If windowing > 1, might send next packet here
-            } else {
-                 // Wrong sequence number ACKed - could be duplicate ACK or error
-                 DebugSerial.print("! Link(ESTABLISHED): Received ACK for wrong seq (Expected: ");
-                 DebugSerial.print(frontPacket.packetInfo.sequence_number);
-                 DebugSerial.print(", Got: "); DebugSerial.print(ackedSequence); DebugSerial.println("). Ignoring.");
-            }
-        } else {
-             // Received an ACK but queue is empty - likely duplicate ACK, ignore.
-             // DebugSerial.println("Link(ESTABLISHED): Received unexpected ACK (queue empty). Ignoring."); // Verbose
-        }
-    } else if (_state == LinkState::CLOSING) {
-         // Expecting ACK for LINK_CLOSE (conceptually seq 0)
-         if (ackedSequence == 0) {
-            DebugSerial.println("Link(CLOSING): Link Close ACK received.");
-            _state = LinkState::CLOSED; // Final state
-            clearPendingQueue();
-            _stateTimer = 0;
-            // Notify manager to remove this link instance
-             _ownerRef.removeLink(_destinationAddress.data());
-         } else {
-              DebugSerial.print("! Link(CLOSING): Received ACK with unexpected seq: "); DebugSerial.println(ackedSequence);
-         }
-    }
-     // Ignore ACKs in CLOSED state
-}
-
-// Handle incoming LINK_DATA packet
-void Link::processData(const RnsPacketInfo& dataPacket) {
-     if (_state != LinkState::ESTABLISHED) return; // Should not happen
-
-     // DebugSerial.print("Link(ESTABLISHED): Received Data seq: "); DebugSerial.println(dataPacket.sequence_number); // Verbose
-
-     if (dataPacket.sequence_number == _expectedIncomingSequence) {
-          // Correct sequence - Process data and send ACK
-          _ownerRef.processReceivedLinkData(dataPacket.source, dataPacket.data);
-          _expectedIncomingSequence++;
-          sendAck(dataPacket.sequence_number);
-     } else {
-          // Handle sequence wrap-around: treat values within a small window
-          // ahead of expected as "future" (out-of-order), and others as duplicates.
-          int32_t diff = (int32_t)dataPacket.sequence_number - (int32_t)_expectedIncomingSequence;
-          // Normalize to signed 16-bit range for wrap-around comparison
-          if (diff > 32767)  diff -= 65536;
-          if (diff < -32768) diff += 65536;
-
-          if (diff < 0) {
-              // Duplicate packet (behind expected) - Resend ACK
-              DebugSerial.print("Link(ESTABLISHED): Duplicate data seq "); DebugSerial.print(dataPacket.sequence_number); DebugSerial.print(" (expected "); DebugSerial.print(_expectedIncomingSequence); DebugSerial.println("). Resending ACK.");
-              sendAck(dataPacket.sequence_number);
-          } else {
-              // Out of order (ahead of expected) - Ignore (simple strategy)
-              DebugSerial.print("! Link(ESTABLISHED): Out-of-order seq "); DebugSerial.print(dataPacket.sequence_number); DebugSerial.print(" (expected "); DebugSerial.print(_expectedIncomingSequence); DebugSerial.println("). Ignoring.");
-          }
-     }
-}
-
-// Internal: Send ACK packet
-void Link::sendAck(uint16_t sequenceToAck) {
-     uint16_t ackPacketId = _ownerRef.getNextPacketId();
-     auto linkData = buildLinkPayload(_ownerRef.getNodeAddress(), ackPacketId, sequenceToAck);
-     uint8_t destHash[RNS_TRUNCATED_HASHLENGTH_BYTES];
-     padDestHash(_destinationAddress.data(), destHash);
-
-     uint8_t buffer[MAX_PACKET_SIZE];
-     size_t len = 0;
-     bool ok = ReticulumPacket::serialize(buffer, len,
-        destHash, RNS_PACKET_DATA, RNS_DEST_LINK,
-        RNS_PROPAGATION_BROADCAST, RNS_CONTEXT_ACK, 0, linkData);
-
-      if (ok) {
-         // DebugSerial.print("Link Sending ACK for seq: "); DebugSerial.println(sequenceToAck); // Verbose
-         _ownerRef.sendPacketRaw(buffer, len, _destinationAddress.data());
-         updateActivity();
-      } else {
-         DebugSerial.println("! ERROR: Link::sendAck serialize failed!");
-      }
-}
-
-// Check for timeouts (ACK for REQ/CLOSE, retransmission for DATA)
-void Link::checkTimeouts() {
-    // Don't check timeouts if link is cleanly closed or already established with nothing pending
-    if (_state == LinkState::CLOSED || (_state == LinkState::ESTABLISHED && _pendingOutgoingPackets.empty())) {
-        _stateTimer = 0; // Ensure timer is off
-        return;
-    }
-
-    unsigned long now = millis();
-    unsigned long timeoutDuration = LINK_RETRY_TIMEOUT_MS; // Default data retry timeout
-
-    if (_state == LinkState::PENDING_REQ) {
-        timeoutDuration = LINK_REQ_TIMEOUT_MS;
-    } else if (_state == LinkState::CLOSING) {
-         timeoutDuration = LINK_RETRY_TIMEOUT_MS; // Reuse data timeout for close ACK
-    }
-    // For ESTABLISHED state with pending packets, timeoutDuration remains LINK_RETRY_TIMEOUT_MS
-
-    if (_stateTimer != 0 && now - _stateTimer > timeoutDuration) {
-        // Timeout occurred!
-        if (_state == LinkState::PENDING_REQ) {
-             DebugSerial.println("! Link Request timed out.");
-             teardown(); // Give up establishing
-        } else if (_state == LinkState::ESTABLISHED && !_pendingOutgoingPackets.empty()) {
-             // Data ACK timeout
-             if (_currentRetryCount < LINK_MAX_RETRIES) {
-                 _currentRetryCount++;
-                 DebugSerial.print("! Link ACK timeout. Retrying packet (Attempt ");
-                 DebugSerial.print(_currentRetryCount); DebugSerial.print("/"); DebugSerial.print(LINK_MAX_RETRIES); DebugSerial.println(")...");
-                 retransmitOldestPending(); // Retransmit and resets _stateTimer
-             } else {
-                  DebugSerial.println("! Link max retries reached. Tearing down link.");
-                  teardown(); // Give up after max retries
-             }
-        } else if (_state == LinkState::CLOSING) {
-             // Close ACK timeout
-             DebugSerial.println("! Link Close ACK timed out. Force closing.");
-             teardown(); // Force close locally, manager will prune
-        }
-    }
-}
-
-// Retransmit the packet at the front of the queue
-void Link::retransmitOldestPending() {
-     if (_pendingOutgoingPackets.empty()) return;
-
-     PendingPacket& pending = _pendingOutgoingPackets.front();
-     pending.lastSentTime = millis();
-     // uint16_t oldPacketId = pending.packetInfo.packet_id; // unused
-     pending.packetInfo.packet_id = _ownerRef.getNextPacketId(); // Use new packet ID
-
-     DebugSerial.print("Link Retransmitting seq "); DebugSerial.print(pending.packetInfo.sequence_number);
-     DebugSerial.print(" ID "); DebugSerial.print(pending.packetInfo.packet_id); DebugSerial.print(" (Retry "); DebugSerial.print(_currentRetryCount); DebugSerial.println(")");
-
-     // Build link payload with current packet_id (may have been refreshed for retry)
-     auto linkData = buildLinkPayload(_ownerRef.getNodeAddress(),
-         pending.packetInfo.packet_id, pending.packetInfo.sequence_number,
-         pending.packetInfo.data);
-     uint8_t destHash[RNS_TRUNCATED_HASHLENGTH_BYTES];
-     padDestHash(pending.packetInfo.destination, destHash);
-
-     uint8_t buffer[MAX_PACKET_SIZE];
-     size_t len = 0;
-     bool ok = ReticulumPacket::serialize(buffer, len,
-         destHash, RNS_PACKET_DATA, RNS_DEST_LINK,
-         RNS_PROPAGATION_BROADCAST, pending.packetInfo.context, 0, linkData);
-
-      if (ok) {
-         _ownerRef.sendPacketRaw(buffer, len, pending.packetInfo.destination);
-         _stateTimer = millis(); // Reset retransmission timer
-         updateActivity();
-      } else {
-          DebugSerial.println("! ERROR: Link::retransmit serialize failed! Tearing down.");
-          teardown();
-      }
-}
-
-// Initiate link closure process
-void Link::close(bool notifyPeer) {
-     if (_state == LinkState::CLOSED) return; // Already closed
-
-     DebugSerial.print("Link::close requested for "); Utils::printBytes(_destinationAddress.data(), RNS_ADDRESS_SIZE, DebugSerial); DebugSerial.println();
-     // Clear any pending packets immediately when close is initiated
-     clearPendingQueue();
-
-     if (notifyPeer && _state != LinkState::CLOSING) {
-         sendLinkClose(); // Tell peer we are closing
-         _state = LinkState::CLOSING;
-         _stateTimer = millis(); // Start timer for close ACK
-         _currentRetryCount = 0; // Reset retries for close state
-     } else {
-          // Force close without notification or if already closing
-         _state = LinkState::CLOSED; // Set state directly
-         // Let manager handle removal via inactivity or explicit call
-     }
-     updateActivity();
-}
-
-// Internal: Send the LINK_CLOSE packet
-void Link::sendLinkClose() {
-     uint16_t closePacketId = _ownerRef.getNextPacketId();
-     auto linkData = buildLinkPayload(_ownerRef.getNodeAddress(), closePacketId, 0);
-     uint8_t destHash[RNS_TRUNCATED_HASHLENGTH_BYTES];
-     padDestHash(_destinationAddress.data(), destHash);
-
-     uint8_t buffer[MAX_PACKET_SIZE];
-     size_t len = 0;
-     bool ok = ReticulumPacket::serialize(buffer, len,
-        destHash, RNS_PACKET_DATA, RNS_DEST_LINK,
-        RNS_PROPAGATION_BROADCAST, RNS_CONTEXT_LINK_CLOSE, 0, linkData);
-      if (ok) { _ownerRef.sendPacketRaw(buffer, len, _destinationAddress.data()); }
-      else { DebugSerial.println("! ERROR: Link::sendLinkClose serialize failed!"); }
-}
-
-// Handle incoming LINK_CLOSE packet from peer
-void Link::processLinkClose(const RnsPacketInfo& closePacket) {
-    DebugSerial.print("Link::processLinkClose received from: "); Utils::printBytes(closePacket.source, RNS_ADDRESS_SIZE, DebugSerial); DebugSerial.println();
-    sendAck(0); // ACK the close request (seq 0)
-    _state = LinkState::CLOSED; // Transition to closed state immediately
-    clearPendingQueue();
-    // Ask manager to remove this link instance now
-    _ownerRef.removeLink(_destinationAddress.data());
-}
-
-// Force immediate closure and state change (called on critical error or timeout)
-// Does NOT notify the peer.
-bool Link::teardown() {
-    if (_state == LinkState::CLOSED) return false;
-    DebugSerial.print("! Link::teardown invoked for "); Utils::printBytes(_destinationAddress.data(), RNS_ADDRESS_SIZE, DebugSerial); DebugSerial.println();
-    _state = LinkState::CLOSED; // Set state directly
-    clearPendingQueue();
-    // DO NOT call removeLink here - let the owner (LinkManager) manage removal
-    // based on the CLOSED state during its prune/timeout checks.
     return true;
 }
 
-// Clear pending packet queue and associated timers/counters
-void Link::clearPendingQueue() {
-    _pendingOutgoingPackets.clear();
-    _currentRetryCount = 0;
-    _stateTimer = 0; // Stop timers related to pending packets/state waits
+// ========================================================================
+// Handshake: X25519 ECDH + HKDF key derivation
+// ========================================================================
+
+bool RNSLink::handshake() {
+    if (_state != RNSLinkState::PENDING) return false;
+    _state = RNSLinkState::HANDSHAKE;
+
+    // X25519 ECDH: shared_key = X25519(our_priv, peer_pub)
+    uint8_t shared_key[32];
+    crypto_x25519(shared_key, _x25519_priv, _peer_x25519_pub);
+
+    // Derive 64-byte key via HKDF-SHA256
+    // salt = link_id, context = empty (matching RNS get_salt()/get_context())
+    if (!rns_hkdf_sha256(_derived_key, 64,
+                         shared_key, 32,
+                         _link_id, 16,
+                         nullptr, 0)) {
+        DebugSerial.println("! RNSLink::handshake: HKDF failed");
+        crypto_wipe(shared_key, 32);
+        _state = RNSLinkState::CLOSED;
+        return false;
+    }
+
+    crypto_wipe(shared_key, 32);
+
+    // Initialize Fernet token with derived key
+    _token.init(_derived_key);
+    _keys_derived = true;
+
+    return true;
+}
+
+// ========================================================================
+// Responder: prove() — sign and send link proof
+// ========================================================================
+
+bool RNSLink::prove() {
+    if (!_keys_derived) return false;
+
+    // Build signed_data: link_id + our_x25519_pub + our_sig_pub + signalling_bytes
+    uint8_t signalling[3];
+    buildSignallingBytes(signalling, _mtu, _mode);
+
+    // Responder's sig_pub = node identity's Ed25519 public key
+    const uint8_t* our_sig_pub = _identityRef.getPublicKey() + 32;  // Ed25519 pub is second 32 bytes
+
+    size_t signed_len = 16 + 32 + 32 + 3;  // link_id + pub + sig_pub + signalling
+    uint8_t signed_data[16 + 32 + 32 + 3];
+    size_t off = 0;
+    memcpy(signed_data + off, _link_id, 16); off += 16;
+    memcpy(signed_data + off, _x25519_pub, 32); off += 32;
+    memcpy(signed_data + off, our_sig_pub, 32); off += 32;
+    memcpy(signed_data + off, signalling, 3);
+
+    // Sign with node identity's Ed25519 key
+    uint8_t signature[64];
+    _identityRef.sign(signature, signed_data, signed_len);
+
+    // Proof payload: [signature 64][X25519_pub 32][signalling 3] = 99 bytes
+    uint8_t proof_data[RNS_LINK_PROOF_SIZE];
+    memcpy(proof_data, signature, 64);
+    memcpy(proof_data + 64, _x25519_pub, 32);
+    memcpy(proof_data + 96, signalling, 3);
+
+    // Send as PROOF packet with LRPROOF context
+    // For LRPROOF, destination field = link_id, dest_type = LINK
+    std::vector<uint8_t> payload(proof_data, proof_data + RNS_LINK_PROOF_SIZE);
+    uint8_t buffer[MAX_PACKET_SIZE];
+    size_t len = 0;
+    bool ok = ReticulumPacket::serialize(buffer, len,
+        _link_id,                // destination = link_id
+        RNS_PACKET_PROOF,       // packet_type = PROOF
+        RNS_DEST_LINK,          // dest_type = LINK
+        RNS_PROPAGATION_BROADCAST,
+        RNS_CONTEXT_LRPROOF,    // context = LRPROOF (0xFF)
+        0,
+        payload);
+
+    if (!ok) {
+        DebugSerial.println("! RNSLink::prove: serialize failed");
+        return false;
+    }
+
+    _ownerRef.sendPacketRaw(buffer, len, _link_id);
+    updateActivity();
+    DebugSerial.println("[Link] LRPROOF sent");
+    return true;
+}
+
+// ========================================================================
+// Initiator: validateProof() — verify proof and complete handshake
+// ========================================================================
+
+bool RNSLink::validateProof(const uint8_t* proof_data, size_t proof_len,
+                             const uint8_t* /*raw_packet*/, size_t /*raw_len*/) {
+    if (!_initiator || _state != RNSLinkState::PENDING) return false;
+
+    // Proof can be 64+32 = 96 bytes (no signalling) or 64+32+3 = 99 bytes
+    if (proof_len != RNS_LINK_PROOF_SIZE && proof_len != 96) {
+        DebugSerial.print("! RNSLink::validateProof: invalid proof size ");
+        DebugSerial.println(proof_len);
+        return false;
+    }
+
+    const uint8_t* signature = proof_data;
+    const uint8_t* peer_pub_bytes = proof_data + 64;
+
+    // Check mode from signalling if present
+    uint8_t signalling[3] = {0};
+    if (proof_len == RNS_LINK_PROOF_SIZE) {
+        memcpy(signalling, proof_data + 96, 3);
+        uint8_t proof_mode = modeFromSignalling(signalling);
+        if (proof_mode != _mode) {
+            DebugSerial.println("! RNSLink::validateProof: mode mismatch");
+            return false;
+        }
+        uint32_t confirmed_mtu = mtuFromSignalling(signalling);
+        if (confirmed_mtu > 0 && confirmed_mtu <= RNS_MTU) {
+            _mtu = confirmed_mtu;
+        }
+    }
+
+    // Load peer keys
+    memcpy(_peer_x25519_pub, peer_pub_bytes, 32);
+    // Peer sig pub = destination's Ed25519 public key (second 32 bytes of dest_pub_key)
+    memcpy(_peer_sig_pub, _dest_pub_key + 32, 32);
+
+    // Perform ECDH handshake
+    if (!handshake()) return false;
+
+    // Verify signature: signed_data = link_id + peer_x25519_pub + peer_sig_pub + signalling
+    uint8_t signed_data[16 + 32 + 32 + 3];
+    size_t signed_len = 16 + 32 + 32;
+    size_t off = 0;
+    memcpy(signed_data + off, _link_id, 16); off += 16;
+    memcpy(signed_data + off, _peer_x25519_pub, 32); off += 32;
+    memcpy(signed_data + off, _peer_sig_pub, 32); off += 32;
+    if (proof_len == RNS_LINK_PROOF_SIZE) {
+        memcpy(signed_data + off, signalling, 3);
+        signed_len += 3;
+    }
+
+    // Verify with destination's Ed25519 public key
+    if (!RNSCrypto::verify(signature, _peer_sig_pub, signed_data, signed_len)) {
+        DebugSerial.println("! RNSLink::validateProof: signature verification failed");
+        _state = RNSLinkState::CLOSED;
+        return false;
+    }
+
+    // Link is now ACTIVE
+    _state = RNSLinkState::ACTIVE;
+    _rtt = (float)(millis() - _requestTime) / 1000.0f;
+    _rttMeasured = true;
+    updateActivity();
+
+    DebugSerial.print("[Link] ACTIVE, RTT=");
+    DebugSerial.print(_rtt * 1000.0f, 1);
+    DebugSerial.println("ms");
+
+    // Send LRRTT packet: msgpack-encoded float RTT
+    // Simple msgpack float32: [0xCA][4 bytes big-endian IEEE 754]
+    uint8_t rtt_data[5];
+    rtt_data[0] = 0xCA;  // msgpack float32 tag
+    union { float f; uint32_t u; } conv;
+    conv.f = _rtt;
+    rtt_data[1] = (conv.u >> 24) & 0xFF;
+    rtt_data[2] = (conv.u >> 16) & 0xFF;
+    rtt_data[3] = (conv.u >> 8) & 0xFF;
+    rtt_data[4] = conv.u & 0xFF;
+
+    std::vector<uint8_t> rtt_payload(rtt_data, rtt_data + 5);
+    uint8_t buffer[MAX_PACKET_SIZE];
+    size_t len = 0;
+    ReticulumPacket::serialize(buffer, len,
+        _link_id,
+        RNS_PACKET_DATA,
+        RNS_DEST_LINK,
+        RNS_PROPAGATION_BROADCAST,
+        RNS_CONTEXT_LRRTT,
+        0,
+        rtt_payload);
+
+    _ownerRef.sendPacketRaw(buffer, len, _link_id);
+
+    return true;
+}
+
+// ========================================================================
+// Responder: handleRTT() — process RTT packet from initiator
+// ========================================================================
+
+void RNSLink::handleRTT(const uint8_t* data, size_t len) {
+    if (_state != RNSLinkState::HANDSHAKE) return;
+
+    // Decode msgpack float32: [0xCA][4 bytes]
+    if (len >= 5 && data[0] == 0xCA) {
+        union { float f; uint32_t u; } conv;
+        conv.u = ((uint32_t)data[1] << 24) | ((uint32_t)data[2] << 16) |
+                 ((uint32_t)data[3] << 8) | data[4];
+        _rtt = conv.f;
+        _rttMeasured = true;
+    }
+    // Also accept msgpack float64: [0xCB][8 bytes] — truncate to float
+    else if (len >= 9 && data[0] == 0xCB) {
+        // Read as double, store as float
+        uint64_t u64 = 0;
+        for (int i = 0; i < 8; i++) u64 = (u64 << 8) | data[1 + i];
+        union { double d; uint64_t u; } dconv;
+        dconv.u = u64;
+        _rtt = (float)dconv.d;
+        _rttMeasured = true;
+    }
+
+    _state = RNSLinkState::ACTIVE;
+    updateActivity();
+    DebugSerial.print("[Link] ACTIVE (responder), RTT=");
+    DebugSerial.print(_rtt * 1000.0f, 1);
+    DebugSerial.println("ms");
+}
+
+// ========================================================================
+// Encryption / Decryption for link data
+// ========================================================================
+
+std::vector<uint8_t> RNSLink::encrypt(const uint8_t* plaintext, size_t len) {
+    if (!_keys_derived) return {};
+    return _token.encrypt(plaintext, len);
+}
+
+std::vector<uint8_t> RNSLink::decrypt(const uint8_t* ciphertext, size_t len) {
+    if (!_keys_derived) return {};
+    return _token.decrypt(ciphertext, len);
+}
+
+void RNSLink::sign(uint8_t signature[64], const uint8_t* message, size_t msg_len) {
+    // Link signing uses the Ed25519 key associated with this link's role
+    if (_initiator) {
+        crypto_eddsa_sign(signature, _sig_priv, message, msg_len);
+    } else {
+        _identityRef.sign(signature, message, msg_len);
+    }
+}
+
+// ========================================================================
+// Send encrypted data over active link
+// ========================================================================
+
+bool RNSLink::sendData(const uint8_t* data, size_t len) {
+    if (_state != RNSLinkState::ACTIVE || !_keys_derived) {
+        DebugSerial.println("! RNSLink::sendData: link not active");
+        return false;
+    }
+
+    auto encrypted = encrypt(data, len);
+    if (encrypted.empty()) {
+        DebugSerial.println("! RNSLink::sendData: encryption failed");
+        return false;
+    }
+
+    // Send as DATA packet with NONE context, dest_type=LINK, destination=link_id
+    uint8_t buffer[MAX_PACKET_SIZE];
+    size_t pkt_len = 0;
+    bool ok = ReticulumPacket::serialize(buffer, pkt_len,
+        _link_id,
+        RNS_PACKET_DATA,
+        RNS_DEST_LINK,
+        RNS_PROPAGATION_BROADCAST,
+        RNS_CONTEXT_NONE,
+        0,
+        encrypted);
+
+    if (!ok) {
+        DebugSerial.println("! RNSLink::sendData: serialize failed");
+        return false;
+    }
+
+    _ownerRef.sendPacketRaw(buffer, pkt_len, _link_id);
+    updateActivity();
+    return true;
+}
+
+// ========================================================================
+// Handle incoming packets on this link
+// ========================================================================
+
+void RNSLink::handlePacket(const RnsPacketInfo& packetInfo) {
+    if (!packetInfo.valid) return;
+    updateActivity();
+
+    uint8_t ctx = packetInfo.context;
+
+    switch (_state) {
+        case RNSLinkState::PENDING:
+            // Initiator waiting for proof
+            if (ctx == RNS_CONTEXT_LRPROOF && packetInfo.packet_type == RNS_PACKET_PROOF) {
+                validateProof(packetInfo.data.data(), packetInfo.data.size(), nullptr, 0);
+            }
+            break;
+
+        case RNSLinkState::HANDSHAKE:
+            // Responder waiting for LRRTT
+            if (ctx == RNS_CONTEXT_LRRTT) {
+                handleRTT(packetInfo.data.data(), packetInfo.data.size());
+            }
+            break;
+
+        case RNSLinkState::ACTIVE: {
+            if (ctx == RNS_CONTEXT_NONE && packetInfo.packet_type == RNS_PACKET_DATA) {
+                // Encrypted data — decrypt and deliver
+                auto plaintext = decrypt(packetInfo.data.data(), packetInfo.data.size());
+                if (!plaintext.empty()) {
+                    _ownerRef.processReceivedLinkData(_link_id, plaintext);
+                }
+            }
+            else if (ctx == RNS_CONTEXT_LINKCLOSE) {
+                // Peer closing link — decrypt and verify it contains our link_id
+                auto plaintext = decrypt(packetInfo.data.data(), packetInfo.data.size());
+                if (!plaintext.empty() && plaintext.size() >= 16 &&
+                    memcmp(plaintext.data(), _link_id, 16) == 0) {
+                    _state = RNSLinkState::CLOSED;
+                    wipeKeys();
+                    DebugSerial.println("[Link] Closed by peer");
+                }
+            }
+            else if (ctx == RNS_CONTEXT_KEEPALIVE) {
+                // Keepalive: if 0xFF from initiator, respond with 0xFE
+                if (!_initiator && packetInfo.data.size() == 1 && packetInfo.data[0] == 0xFF) {
+                    uint8_t resp = 0xFE;
+                    std::vector<uint8_t> kp = {resp};
+                    uint8_t buffer[MAX_PACKET_SIZE];
+                    size_t len = 0;
+                    ReticulumPacket::serialize(buffer, len, _link_id,
+                        RNS_PACKET_DATA, RNS_DEST_LINK, RNS_PROPAGATION_BROADCAST,
+                        RNS_CONTEXT_KEEPALIVE, 0, kp);
+                    _ownerRef.sendPacketRaw(buffer, len, _link_id);
+                }
+            }
+            else if (ctx == RNS_CONTEXT_LRRTT) {
+                // RTT measurement in active state (from initiator → responder)
+                handleRTT(packetInfo.data.data(), packetInfo.data.size());
+            }
+            break;
+        }
+
+        case RNSLinkState::STALE:
+        case RNSLinkState::CLOSED:
+            break;
+    }
+}
+
+// ========================================================================
+// Close link
+// ========================================================================
+
+void RNSLink::close(bool notifyPeer) {
+    if (_state == RNSLinkState::CLOSED) return;
+
+    if (notifyPeer && _state == RNSLinkState::ACTIVE && _keys_derived) {
+        // Send encrypted link_id as LINKCLOSE
+        auto encrypted = encrypt(_link_id, 16);
+        if (!encrypted.empty()) {
+            uint8_t buffer[MAX_PACKET_SIZE];
+            size_t len = 0;
+            ReticulumPacket::serialize(buffer, len, _link_id,
+                RNS_PACKET_DATA, RNS_DEST_LINK, RNS_PROPAGATION_BROADCAST,
+                RNS_CONTEXT_LINKCLOSE, 0, encrypted);
+            _ownerRef.sendPacketRaw(buffer, len, _link_id);
+        }
+    }
+
+    _state = RNSLinkState::CLOSED;
+    wipeKeys();
+    DebugSerial.println("[Link] Closed");
+}
+
+// ========================================================================
+// Timeout handling
+// ========================================================================
+
+void RNSLink::checkTimeouts() {
+    if (_state == RNSLinkState::CLOSED) return;
+
+    unsigned long now = millis();
+
+    if (_state == RNSLinkState::PENDING || _state == RNSLinkState::HANDSHAKE) {
+        // Establishment timeout
+        unsigned long timeout = RNS_LINK_EST_TIMEOUT_PER_HOP_MS + RNS_LINK_KEEPALIVE_MIN_MS;
+        if (now - _requestTime > timeout) {
+            DebugSerial.println("! RNSLink: establishment timed out");
+            _state = RNSLinkState::CLOSED;
+            wipeKeys();
+        }
+    }
+    else if (_state == RNSLinkState::ACTIVE) {
+        // Inactivity timeout
+        if (now - _lastActivityTime > LINK_INACTIVITY_TIMEOUT_MS) {
+            DebugSerial.println("! RNSLink: inactivity timeout");
+            close(true);
+        }
+    }
 }

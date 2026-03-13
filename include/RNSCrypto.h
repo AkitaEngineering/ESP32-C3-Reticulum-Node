@@ -23,6 +23,7 @@
 #include <EEPROM.h>
 #include <monocypher.h>
 #include "RNSIdentity.h"
+#include "RNSFernet.h"
 #include "Config.h"
 
 // EEPROM layout for identity keys (placed after existing node config)
@@ -109,6 +110,109 @@ public:
                        const uint8_t* message, size_t msg_len) {
         return crypto_eddsa_check(signature, public_key, message, msg_len) == 0;
     }
+
+    // --- SINGLE Destination Encryption ---
+
+    /**
+     * Encrypt plaintext for this identity (SINGLE destination encryption).
+     *
+     * Matches RNS Identity.encrypt():
+     *   1. Generate ephemeral X25519 keypair
+     *   2. ECDH: shared = X25519(ephemeral_priv, recipient_x25519_pub)
+     *   3. HKDF-SHA256(shared, salt=identity_hash, context=empty, length=64)
+     *   4. Fernet encrypt plaintext with derived key
+     *   5. Return [ephemeral_pub 32][fernet_token]
+     *
+     * @param plaintext       data to encrypt
+     * @param len             plaintext length
+     * @param recipient_pub   recipient's X25519 public key (32 bytes) — first half of their 64-byte public key
+     * @param recipient_hash  recipient's 16-byte identity hash (used as HKDF salt)
+     * @return                encrypted token: [ephemeral_pub 32][fernet_token]
+     */
+    static std::vector<uint8_t> encryptForIdentity(
+        const uint8_t* plaintext, size_t len,
+        const uint8_t recipient_pub[32],
+        const uint8_t recipient_hash[16])
+    {
+        // Generate ephemeral X25519 keypair
+        uint8_t eph_priv[32], eph_pub[32];
+        esp_fill_random(eph_priv, 32);
+        crypto_x25519_public_key(eph_pub, eph_priv);
+
+        // ECDH
+        uint8_t shared[32];
+        crypto_x25519(shared, eph_priv, recipient_pub);
+        crypto_wipe(eph_priv, 32);
+
+        // HKDF: salt = identity_hash, context = empty
+        uint8_t derived[64];
+        if (!rns_hkdf_sha256(derived, 64, shared, 32, recipient_hash, 16, nullptr, 0)) {
+            crypto_wipe(shared, 32);
+            return {};
+        }
+        crypto_wipe(shared, 32);
+
+        // Fernet encrypt
+        RNSToken token;
+        token.init(derived);
+        crypto_wipe(derived, 64);
+
+        auto fernet_token = token.encrypt(plaintext, len);
+        if (fernet_token.empty()) return {};
+
+        // Result: [ephemeral_pub 32][fernet_token]
+        std::vector<uint8_t> result(32 + fernet_token.size());
+        memcpy(result.data(), eph_pub, 32);
+        memcpy(result.data() + 32, fernet_token.data(), fernet_token.size());
+        return result;
+    }
+
+    /**
+     * Decrypt a SINGLE destination ciphertext token addressed to this identity.
+     *
+     * Matches RNS Identity.decrypt():
+     *   1. Extract ephemeral_pub (first 32 bytes)
+     *   2. ECDH: shared = X25519(our_priv, ephemeral_pub)
+     *   3. HKDF-SHA256(shared, salt=identity_hash, context=empty, length=64)
+     *   4. Fernet decrypt remainder
+     *
+     * @param ciphertext_token  [ephemeral_pub 32][fernet_token]
+     * @param token_len         total token length
+     * @return                  decrypted plaintext, empty on failure
+     */
+    std::vector<uint8_t> decryptForIdentity(const uint8_t* ciphertext_token, size_t token_len) const {
+        if (token_len <= 32) return {};  // Must have at least ephemeral_pub + minimum fernet
+
+        const uint8_t* peer_pub = ciphertext_token;
+        const uint8_t* fernet_data = ciphertext_token + 32;
+        size_t fernet_len = token_len - 32;
+
+        // ECDH: shared = X25519(our_priv, peer_ephemeral_pub)
+        uint8_t shared[32];
+        crypto_x25519(shared, _x25519_private, peer_pub);
+
+        // HKDF: salt = our identity_hash, context = empty
+        uint8_t derived[64];
+        if (!rns_hkdf_sha256(derived, 64, shared, 32, _identity_hash, 16, nullptr, 0)) {
+            crypto_wipe(shared, 32);
+            return {};
+        }
+        crypto_wipe(shared, 32);
+
+        // Fernet decrypt
+        RNSToken token;
+        token.init(derived);
+        crypto_wipe(derived, 64);
+
+        return token.decrypt(fernet_data, fernet_len);
+    }
+
+    /** Get X25519 private key (for link handshake — use carefully). */
+    const uint8_t* getX25519Private() const { return _x25519_private; }
+    /** Get X25519 public key (first 32 bytes of public_key). */
+    const uint8_t* getX25519Public() const { return _x25519_public; }
+    /** Get Ed25519 public key (second 32 bytes of public_key). */
+    const uint8_t* getEd25519Public() const { return _ed25519_public; }
 
     // --- Announce Payload Construction ---
 

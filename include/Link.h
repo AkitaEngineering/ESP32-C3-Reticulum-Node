@@ -1,84 +1,165 @@
 #ifndef LINK_H
 #define LINK_H
 
+/**
+ * RNS-compatible Link protocol implementation.
+ *
+ * Implements the full Reticulum link establishment handshake:
+ *   1. Initiator sends LINKREQUEST: [X25519_pub 32][Ed25519_sig_pub 32][signalling 3]
+ *   2. Responder validates, performs X25519 ECDH, derives keys via HKDF-SHA256
+ *   3. Responder sends LRPROOF: [signature 64][X25519_pub 32][signalling 3]
+ *   4. Initiator validates proof, performs ECDH, derives shared keys
+ *   5. Initiator sends LRRTT with msgpacked RTT
+ *   6. Link is ACTIVE — all data encrypted with Fernet tokens
+ *
+ * Link ID = truncated_hash(hashable_part without MTU signalling)
+ * Key derivation: HKDF-SHA256(shared_key, salt=link_id, context=empty, length=64)
+ * Derived key[0:32] = signing_key, [32:64] = encryption_key
+ *
+ * Reference: RNS/Link.py
+ */
+
 #include <Arduino.h>
 #include <cstdint>
+#include <cstddef>
+#include <cstring>
 #include <vector>
-#include <list>
-#include <array>
-#include <memory> // Include memory for shared_ptr potentially
+#include <monocypher.h>
 
 #include "Config.h"
-#include "ReticulumPacket.h" // For RnsPacketInfo
+#include "RNSIdentity.h"
+#include "RNSFernet.h"
+#include "ReticulumPacket.h"
 
-// Forward declaration
+// Forward declarations
 class LinkManager;
+class RNSCrypto;
 
-class Link {
+// Link constants (from RNS/Link.py)
+static constexpr size_t RNS_LINK_ECPUBSIZE   = 64;  // X25519_pub(32) + Ed25519_sig_pub(32)
+static constexpr size_t RNS_LINK_KEYSIZE     = 32;
+static constexpr size_t RNS_LINK_MTU_SIZE    = 3;
+static constexpr size_t RNS_LINK_SIGBYTES    = 64;
+
+// Link request: [X25519_pub 32][Ed25519_sig_pub 32][signalling 3] = 67 bytes
+static constexpr size_t RNS_LINK_REQUEST_SIZE = 32 + 32 + 3;
+// Link proof: [signature 64][X25519_pub 32][signalling 3] = 99 bytes
+static constexpr size_t RNS_LINK_PROOF_SIZE   = 64 + 32 + 3;
+
+// Link modes
+static constexpr uint8_t RNS_LINK_MODE_AES256_CBC = 0x01;
+
+// Establishment timeout per hop
+static constexpr unsigned long RNS_LINK_EST_TIMEOUT_PER_HOP_MS = 6000;
+static constexpr unsigned long RNS_LINK_KEEPALIVE_MIN_MS       = 15000;
+
+// Link states
+enum class RNSLinkState : uint8_t {
+    PENDING    = 0x00,
+    HANDSHAKE  = 0x01,
+    ACTIVE     = 0x02,
+    STALE      = 0x03,
+    CLOSED     = 0x04
+};
+
+class RNSLink {
 public:
-    enum class LinkState {
-        CLOSED,
-        PENDING_REQ, // Waiting for ACK to our LINK_REQ
-        ESTABLISHED,
-        CLOSING      // Waiting for ACK to our LINK_CLOSE
-    };
+    /**
+     * Create as RESPONDER (incoming link request).
+     */
+    RNSLink(const uint8_t link_id[16],
+            const uint8_t peer_pub[32],
+            const uint8_t peer_sig_pub[32],
+            LinkManager& owner,
+            RNSCrypto& identity);
 
-    // Constructor requires destination address and owner (LinkManager)
-    Link(const uint8_t* destination, LinkManager& owner);
-    ~Link(); // Destructor
+    /**
+     * Create as INITIATOR (outgoing to a known destination).
+     */
+    RNSLink(const uint8_t dest_hash[16],
+            const uint8_t dest_pub_key[64],
+            LinkManager& owner,
+            RNSCrypto& identity);
 
-    // Core methods
-    bool establish(); // Initiate link establishment
-    bool sendData(const std::vector<uint8_t>& dataPayload); // Send application data
-    void handlePacket(const RnsPacketInfo& packetInfo); // Process incoming packet for this link
-    void checkTimeouts(); // Called periodically to check for ACK/retransmission timeouts
-    void close(bool notifyPeer = true); // Initiate link closure
-    bool teardown(); // Force immediate closure and cleanup (sets state to CLOSED)
+    ~RNSLink();
 
-    // State checks
-    bool isEstablished() const { return _state == LinkState::ESTABLISHED; }
-    bool isActive() const { return _state != LinkState::CLOSED; } // Active if not fully CLOSED
-    const uint8_t* getDestination() const { return _destinationAddress.data(); }
+    // --- Core operations ---
+    bool establish();
+    void handlePacket(const RnsPacketInfo& packetInfo);
+    bool sendData(const uint8_t* data, size_t len);
+    void close(bool notifyPeer = true);
+    void checkTimeouts();
+
+    // --- State queries ---
+    RNSLinkState getState() const { return _state; }
+    bool isActive() const { return _state == RNSLinkState::ACTIVE; }
+    bool isInitiator() const { return _initiator; }
+    const uint8_t* getLinkId() const { return _link_id; }
     unsigned long getLastActivityTime() const { return _lastActivityTime; }
-    LinkState getState() const { return _state; } // Added getter for state
 
+    // --- Crypto operations for link data ---
+    std::vector<uint8_t> encrypt(const uint8_t* plaintext, size_t len);
+    std::vector<uint8_t> decrypt(const uint8_t* ciphertext, size_t len);
+    void sign(uint8_t signature[64], const uint8_t* message, size_t msg_len);
+
+    // --- Handshake (called by LinkManager) ---
+    bool handshake();
+    bool prove();
+    bool validateProof(const uint8_t* proof_data, size_t proof_len,
+                       const uint8_t* raw_packet, size_t raw_len);
+    void handleRTT(const uint8_t* data, size_t len);
+
+    // --- Signalling helpers (public for LinkManager) ---
+    static void buildSignallingBytes(uint8_t out[3], uint32_t mtu, uint8_t mode);
+    static uint32_t mtuFromSignalling(const uint8_t sig[3]);
+    static uint8_t modeFromSignalling(const uint8_t sig[3]);
 
 private:
-    // Structure to hold packet info and retransmission state
-    struct PendingPacket {
-        RnsPacketInfo packetInfo; // Holds the full packet info for retransmission
-        unsigned long firstSentTime;
-        unsigned long lastSentTime;
-        // uint8_t retryCount = 0; // Retry count specific to this packet (use _currentRetryCount for link state)
-    };
+    void updateActivity() { _lastActivityTime = millis(); }
+    void wipeKeys();
 
-    void sendLinkRequest();
-    void sendLinkClose();
-    void sendAck(uint16_t sequenceToAck);
-    void sendPacketInternal(const RnsPacketInfo& packetInfo); // Adds to queue, serializes, sends, starts timers
-    void processAck(const RnsPacketInfo& ackPacket);
-    void processData(const RnsPacketInfo& dataPacket);
-    void processLinkRequest(const RnsPacketInfo& reqPacket);
-    void processLinkClose(const RnsPacketInfo& closePacket);
-    void retransmitOldestPending();
-    void clearPendingQueue();
-    void updateActivity() { _lastActivityTime = millis(); } // Update timestamp
+    // Identity
+    bool _initiator;
+    RNSLinkState _state;
+    LinkManager& _ownerRef;
+    RNSCrypto& _identityRef;
 
+    // Link identity
+    uint8_t _link_id[16];
 
-    std::array<uint8_t, RNS_ADDRESS_SIZE> _destinationAddress;
-    LinkManager& _ownerRef; // Reference to owner for sending/config access
-    LinkState _state = LinkState::CLOSED;
-    unsigned long _lastActivityTime = 0;
-    unsigned long _stateTimer = 0; // Timer for state transitions (REQ/CLOSE ACK) and retransmissions
-    uint16_t _outgoingSequence = 0; // Next data sequence number to send
-    uint16_t _expectedIncomingSequence = 0; // Next data sequence number expected
-    uint16_t _linkReqPacketId = 0; // Packet ID of the link request we sent
+    // Our ephemeral X25519 keypair (per-link)
+    uint8_t _x25519_priv[32];
+    uint8_t _x25519_pub[32];
 
-    // Queue for reliable data packets awaiting ACK (simplified: size 1 initially)
-    std::list<PendingPacket> _pendingOutgoingPackets;
-    uint8_t _currentRetryCount = 0; // Retries for the packet/state action currently awaiting ACK/timeout
+    // Our Ed25519 keypair (initiator: ephemeral; responder: node identity)
+    uint8_t _sig_priv[64];
+    uint8_t _sig_pub[32];
+    uint8_t _sig_seed[32];  // Ed25519 seed for initiator's ephemeral key
 
+    // Peer keys
+    uint8_t _peer_x25519_pub[32];
+    uint8_t _peer_sig_pub[32];
 
+    // Destination info (initiator only)
+    uint8_t _dest_hash[16];
+    uint8_t _dest_pub_key[64];
+
+    // Derived keys from HKDF after ECDH
+    uint8_t _derived_key[64];
+    bool _keys_derived;
+
+    // Fernet token for link encryption
+    RNSToken _token;
+
+    // MTU/mode
+    uint32_t _mtu;
+    uint8_t _mode;
+
+    // Timing
+    unsigned long _lastActivityTime;
+    unsigned long _requestTime;
+    float _rtt;
+    bool _rttMeasured;
 };
 
 #endif // LINK_H
