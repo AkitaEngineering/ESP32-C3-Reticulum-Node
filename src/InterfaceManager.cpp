@@ -114,6 +114,13 @@ void InterfaceManager::loop() {
     flushPendingUsbKissFrames();
 #endif
 
+    // Periodic ESP-NOW diagnostic over KISS (every 10 seconds)
+    unsigned long now = millis();
+    if (now - _lastDiagMs >= 10000) {
+        _lastDiagMs = now;
+        sendEspNowDiagKiss();
+    }
+
     // Process inputs from KISS interfaces
     processSerialInput();
 #if BLUETOOTH_CLASSIC_AVAILABLE
@@ -234,7 +241,7 @@ void InterfaceManager::setupESPNow() {
     if (result != ESP_OK) {
          DebugSerial.print("! ERROR: Failed to register ESP-NOW recv cb: "); DebugSerial.println(esp_err_to_name(result));
     }
-    // esp_now_register_send_cb(staticEspNowSendCallback); // Optional: register send status callback
+    esp_now_register_send_cb(staticEspNowSendCallback);
 
     _espNowInitialized = true;
 
@@ -967,6 +974,7 @@ void InterfaceManager::staticEspNowRecvCallback(const esp_now_recv_info_t *recv_
 void InterfaceManager::staticEspNowRecvCallback(const uint8_t *mac_addr, const uint8_t *incomingData, int len) {
 #endif
     if (_instance && _instance->_packetReceiver && mac_addr && incomingData && len > 0) {
+         _instance->espNowRxCount++;
          DebugSerial.print("[ESP-NOW RX] "); DebugSerial.print(len); DebugSerial.print("B from ");
          Utils::printBytes(mac_addr, 6, DebugSerial); DebugSerial.println();
          _instance->handleEspNowPayload(mac_addr, incomingData, len);
@@ -981,6 +989,54 @@ void InterfaceManager::staticEspNowSendCallback(const uint8_t *mac_addr, esp_now
     }
 }
 */
+
+void InterfaceManager::staticEspNowSendCallback(const uint8_t *mac_addr, esp_now_send_status_t status) {
+    if (_instance) {
+        if (status == ESP_NOW_SEND_SUCCESS) _instance->espNowTxOk++;
+        else _instance->espNowTxFail++;
+    }
+}
+
+void InterfaceManager::sendEspNowDiagKiss() {
+    // Emit a KISS frame with cmd=0x06 containing ESP-NOW diagnostic text
+    // Format: human-readable ASCII so host monitoring scripts can parse it
+    uint8_t ch = 0;
+    wifi_second_chan_t sec;
+    esp_wifi_get_channel(&ch, &sec);
+    int8_t txPwr = 0;
+    esp_wifi_get_max_tx_power(&txPwr);
+
+    char buf[160];
+    int n = snprintf(buf, sizeof(buf),
+        "ESPNOW ch=%u init=%d tx_ok=%lu tx_fail=%lu rx=%lu peers=%u pwr=%d mac=%s",
+        ch, _espNowInitialized ? 1 : 0,
+        (unsigned long)espNowTxOk, (unsigned long)espNowTxFail,
+        (unsigned long)espNowRxCount,
+        (unsigned)_espNowPeers.size(), (int)txPwr,
+        WiFi.macAddress().c_str());
+    if (n <= 0) return;
+
+    // Build KISS frame: FEND + cmd(0x06) + payload + FEND
+    std::vector<uint8_t> frame;
+    frame.reserve(n + 10);
+    frame.push_back(KISS_FEND);
+    frame.push_back(0x06); // KISS SetHardware / diagnostic
+    for (int i = 0; i < n; ++i) {
+        uint8_t b = static_cast<uint8_t>(buf[i]);
+        if (b == KISS_FEND) { frame.push_back(KISS_FESC); frame.push_back(KISS_TFEND); }
+        else if (b == KISS_FESC) { frame.push_back(KISS_FESC); frame.push_back(KISS_TFESC); }
+        else frame.push_back(b);
+    }
+    frame.push_back(KISS_FEND);
+
+#if defined(KISS_OVER_USB)
+    if (Serial) {
+        KissSerial.write(frame.data(), frame.size());
+    }
+#else
+    KissSerial.write(frame.data(), frame.size());
+#endif
+}
 
 #ifdef LORA_ENABLED
 // --- LoRa Implementation ---

@@ -104,7 +104,13 @@ public:
 #else
     static void staticEspNowRecvCallback(const uint8_t *mac_addr, const uint8_t *incomingData, int len);
 #endif
-    // static void staticEspNowSendCallback(const uint8_t *mac_addr, esp_now_send_status_t status); // Optional
+    static void staticEspNowSendCallback(const uint8_t *mac_addr, esp_now_send_status_t status);
+
+    // ESP-NOW diagnostic counters (readable from host via KISS cmd 0x06)
+    uint32_t espNowTxOk = 0;
+    uint32_t espNowTxFail = 0;
+    uint32_t espNowRxCount = 0;
+    void sendEspNowDiagKiss();
 
 private:
     struct EspNowRxAssembly {
@@ -196,6 +202,7 @@ private:
     std::vector<EspNowRxAssembly> _espNowRxAssemblies;
     std::deque<EspNowQueuedPacket> _espNowStoreQueue;
     uint16_t _espNowTxMessageId = 0;
+    unsigned long _lastDiagMs = 0;
 #if defined(KISS_OVER_USB)
     std::deque<std::vector<uint8_t>> _pendingUsbKissFrames;
     static constexpr size_t MAX_PENDING_USB_KISS_FRAMES = 32;
