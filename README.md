@@ -87,6 +87,19 @@ In this mode:
 - **UART1** (GPIO2 RX / GPIO4 TX) carries debug output at 115200 baud
 - Packets received via USB KISS are forwarded over ESP-NOW (and vice versa)
 
+> **Important:** On the host side, you must configure Reticulum to use a **KISSInterface**, not a `SerialInterface`.
+> `SerialInterface` expects HDLC framing (0x7E), while the ESP32 firmware sends KISS framing (0xC0). If you use `SerialInterface` you will see "malformed packet" errors.
+
+Example Reticulum configuration (`~/.reticulum/config`):
+
+```ini
+[[ESP32_KISS]]
+  type = KISSInterface
+  enabled = yes
+  port = /dev/ttyACM0
+  speed = 115200
+```
+
 > **ESP32-C3 USB Note:** The HWCDC `connected` flag starts `false`. The host must write at least one byte to the device before `Serial.write()` output will flow. Most serial tools do this automatically; for raw `open()` calls, write a newline after connecting.
 
 ## Build Environments
