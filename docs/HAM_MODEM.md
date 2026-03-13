@@ -41,8 +41,24 @@ HAM modem support enables integration with amateur packet radio networks through
 
 #### 3.1.2 Protocol Interface
 - **Protocol**: KISS (Keep It Simple, Stupid)
-- **Frame Format**: Standard KISS framing
+- **Frame Format**: Standard KISS framing (0xC0 delimiters, 0xDB escape)
 - **Command Byte**: 0x00 (data frame)
+
+> **Reticulum Configuration Note (USB KISS)**
+>
+> When using the USB CDC port as a KISS interface, the Reticulum daemon must use the
+> `KISSInterface` type (not `SerialInterface`). Example:
+>
+> ```ini
+> [[My USB KISS]]
+>   type = KISSInterface
+>   enabled = yes
+>   port = /dev/ttyACM0
+>   speed = 115200
+> ```
+>
+> Using `SerialInterface` will not work because it expects HDLC framing (0x7E) instead
+> of KISS framing (0xC0).
 
 ### 3.2 Supported TNCs
 Any TNC supporting KISS protocol, including:
