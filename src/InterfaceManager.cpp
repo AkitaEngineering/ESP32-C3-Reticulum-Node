@@ -332,6 +332,12 @@ void InterfaceManager::sendPacket(const uint8_t *packetBuffer, size_t packetLen,
              // Send only via the routed interface
              sendPacketVia(route->interface, packetBuffer, packetLen, destinationAddr);
         }
+        // In TNC mode, also bridge to serial so the host sees all traffic,
+        // unless the packet already came from serial or is routed to serial.
+        if (excludeInterface != InterfaceType::SERIAL_PORT &&
+            route->interface != InterfaceType::SERIAL_PORT) {
+            sendPacketViaSerial(packetBuffer, packetLen);
+        }
     } else {
         // No route, broadcast on primary interfaces (excluding source)
         // DebugSerial.print("Broadcasting packet (no route found) for dest: "); Utils::printBytes(destinationAddr, RNS_ADDRESS_SIZE, DebugSerial); DebugSerial.println(); // Verbose
@@ -625,9 +631,15 @@ void InterfaceManager::flushPendingUsbKissFrames() {
     }
 
     while (!_pendingUsbKissFrames.empty()) {
-        const std::vector<uint8_t> &frame = _pendingUsbKissFrames.front();
+        std::vector<uint8_t> &frame = _pendingUsbKissFrames.front();
         size_t written = KissSerial.write(frame.data(), frame.size());
-        if (written != frame.size()) {
+        if (written == 0) {
+            break; // TX buffer full, retry next loop
+        }
+        if (written < frame.size()) {
+            // Partial write: remove the bytes already sent so we
+            // resume cleanly on the next flush without duplicating data.
+            frame.erase(frame.begin(), frame.begin() + written);
             break;
         }
         _pendingUsbKissFrames.pop_front();
