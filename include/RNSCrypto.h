@@ -22,6 +22,7 @@
 #include <vector>
 #include <EEPROM.h>
 #include <monocypher.h>
+#include <optional/monocypher-ed25519.h>
 #include "RNSIdentity.h"
 #include "RNSFernet.h"
 #include "Config.h"
@@ -99,7 +100,7 @@ public:
      * @param msg_len    message length
      */
     void sign(uint8_t signature[64], const uint8_t* message, size_t msg_len) const {
-        crypto_eddsa_sign(signature, _ed25519_secret, message, msg_len);
+        crypto_ed25519_sign(signature, _ed25519_secret, message, msg_len);
     }
 
     /**
@@ -108,7 +109,7 @@ public:
      */
     static bool verify(const uint8_t signature[64], const uint8_t public_key[32],
                        const uint8_t* message, size_t msg_len) {
-        return crypto_eddsa_check(signature, public_key, message, msg_len) == 0;
+        return crypto_ed25519_check(signature, public_key, message, msg_len) == 0;
     }
 
     // --- SINGLE Destination Encryption ---
@@ -321,8 +322,8 @@ private:
         crypto_x25519_public_key(_x25519_public, _x25519_private);
 
         // Derive Ed25519 keypair from 32-byte seed
-        // crypto_eddsa_key_pair produces a 64-byte secret key and 32-byte public key
-        crypto_eddsa_key_pair(_ed25519_secret, _ed25519_public, _ed25519_seed);
+        // crypto_ed25519_key_pair produces a 64-byte secret key and 32-byte public key
+        crypto_ed25519_key_pair(_ed25519_secret, _ed25519_public, _ed25519_seed);
 
         // Combined public key: [X25519_pub 32][Ed25519_pub 32]
         // This matches RNS Identity.get_public_key() = pub_bytes + sig_pub_bytes

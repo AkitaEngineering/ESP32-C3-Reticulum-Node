@@ -87,7 +87,7 @@ RNSLink::RNSLink(const uint8_t dest_hash[16],
 
     // Generate ephemeral Ed25519 keypair (initiator uses random, not node identity)
     esp_fill_random(_sig_seed, 32);
-    crypto_eddsa_key_pair(_sig_priv, _sig_pub, _sig_seed);
+    crypto_ed25519_key_pair(_sig_priv, _sig_pub, _sig_seed);
 }
 
 RNSLink::~RNSLink() {
@@ -400,7 +400,7 @@ std::vector<uint8_t> RNSLink::decrypt(const uint8_t* ciphertext, size_t len) {
 void RNSLink::sign(uint8_t signature[64], const uint8_t* message, size_t msg_len) {
     // Link signing uses the Ed25519 key associated with this link's role
     if (_initiator) {
-        crypto_eddsa_sign(signature, _sig_priv, message, msg_len);
+        crypto_ed25519_sign(signature, _sig_priv, message, msg_len);
     } else {
         _identityRef.sign(signature, message, msg_len);
     }

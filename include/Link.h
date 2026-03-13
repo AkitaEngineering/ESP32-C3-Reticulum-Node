@@ -25,6 +25,7 @@
 #include <cstring>
 #include <vector>
 #include <monocypher.h>
+#include <optional/monocypher-ed25519.h>
 
 #include "Config.h"
 #include "RNSIdentity.h"
