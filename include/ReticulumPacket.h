@@ -35,7 +35,7 @@
 const size_t RNS_TRUNCATED_HASHLENGTH_BYTES = 16;  // 128 bits / 8
 const size_t RNS_HEADER_1_SIZE = 2 + 16 + 1;  // flags + hops + dest_hash + context = 19 bytes
 const size_t RNS_HEADER_2_SIZE = 2 + 16 + 16 + 1;  // flags + hops + transport_id + dest_hash + context = 35 bytes
-const size_t MAX_PACKET_SIZE = RNS_HEADER_1_SIZE + RNS_MAX_PAYLOAD;
+const size_t MAX_PACKET_SIZE = RNS_MTU;  // Official Reticulum MTU = 500 bytes
 
 
 // --- Decoded Packet Info Structure ---
@@ -93,7 +93,8 @@ namespace ReticulumPacket {
     bool deserialize(const uint8_t *buffer, size_t len, RnsPacketInfo &info);
 
     // Official Reticulum wire format serialize
-    // Format: [FLAGS 1] [HOPS 1] [DEST_HASH 16] [CONTEXT 1] [DATA]
+    // Header Type 1: [FLAGS 1] [HOPS 1] [DEST_HASH 16] [CONTEXT 1] [DATA]
+    // Header Type 2: [FLAGS 1] [HOPS 1] [TRANSPORT_ID 16] [DEST_HASH 16] [CONTEXT 1] [DATA]
     bool serialize(uint8_t *buffer, size_t &len,
                    const uint8_t* dest_hash_16bytes,  // Full 16-byte destination hash
                    uint8_t packet_type,                // RNS_PACKET_DATA, etc.
@@ -101,7 +102,10 @@ namespace ReticulumPacket {
                    uint8_t propagation_type,           // RNS_PROPAGATION_BROADCAST, etc.
                    uint8_t context,                    // RNS_CONTEXT_NONE, etc.
                    uint8_t hops,
-                   const std::vector<uint8_t>& data);  // Payload data (unencrypted for PLAIN)
+                   const std::vector<uint8_t>& data,   // Payload data
+                   uint8_t context_flag = 0,           // Context flag (bit 5 of flags)
+                   uint8_t header_type = RNS_HEADER_1, // Header type (0=Type1, 1=Type2)
+                   const uint8_t* transport_id = nullptr); // 16-byte transport ID (Header Type 2 only)
 }
 
 #endif // RETICULUM_PACKET_H

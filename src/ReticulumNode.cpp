@@ -38,6 +38,7 @@ ReticulumNode::ReticulumNode() :
     _recentDataPktIdx(0)
 {
     memset(_nodeAddress, 0, RNS_ADDRESS_SIZE); // Clear address initially
+    memset(_destinationHash, 0, sizeof(_destinationHash));
     memset(_recentDataPkts, 0, sizeof(_recentDataPkts));
 }
 
@@ -45,6 +46,21 @@ void ReticulumNode::setup() {
     // Load config must happen first
     loadConfig(); // Loads address, packet ID
     printNodeAddress();
+
+    // Initialize RNS cryptographic identity (loads from EEPROM or generates new)
+    if (_identity.begin()) {
+        // Compute destination hash for this node's announce destination
+        _identity.getDestinationHash(RNS_APP_NAME, _destinationHash);
+        DebugSerial.print("[Identity] Hash: ");
+        Utils::printBytes(_identity.getIdentityHash(), 16, DebugSerial);
+        DebugSerial.println();
+        DebugSerial.print("[Identity] Dest: ");
+        Utils::printBytes(_destinationHash, 16, DebugSerial);
+        DebugSerial.println();
+    } else {
+        LOG_ERROR("Failed to initialize RNS identity!");
+    }
+
     _subscribedGroups = SUBSCRIBED_GROUPS; // Copy groups from Config.h
 
     // runtime sanity checks
@@ -350,30 +366,29 @@ void ReticulumNode::sendAnnounceIfNeeded() {
     unsigned long now = millis();
     // Check if announce interval has passed
     if (now - _last_announce_time > ANNOUNCE_INTERVAL_MS) {
-        // announce acts as a liveness beacon; log each time so external monitors can see us
+        if (!_identity.isReady()) {
+            DebugSerial.println("[Node] Identity not ready, skipping announce.");
+            _last_announce_time = now;
+            return;
+        }
+
         DebugSerial.println("[Node] Sending periodic announce (alive).");
 
-        RnsPacketInfo announcePkt;
-        announcePkt.hops = 0;
-        memcpy(announcePkt.source, _nodeAddress, RNS_ADDRESS_SIZE);
-
-        // Pack source address into payload so receivers can identify the announcer
-        // Official Reticulum announce payload: [SOURCE_ADDR 8] [app data...]
-        std::vector<uint8_t> announcePayload(_nodeAddress, _nodeAddress + RNS_ADDRESS_SIZE);
-
-        // Broadcast announce with 16-byte all-zeros destination hash
-        uint8_t announceDestHash[RNS_TRUNCATED_HASHLENGTH_BYTES] = {0};
+        // Build cryptographic announce payload matching reference RNS:
+        // [PUB_KEY 64][NAME_HASH 10][RANDOM_HASH 10][SIGNATURE 64][APP_DATA...]
+        // signed_data = dest_hash + pub_key + name_hash + random_hash + app_data
+        std::vector<uint8_t> announcePayload = _identity.buildAnnouncePayload(RNS_APP_NAME);
 
         uint8_t buffer[MAX_PACKET_SIZE];
         size_t len = 0;
         if (ReticulumPacket::serialize(buffer, len,
-            announceDestHash,               // 16-byte destination hash (all zeros = broadcast)
+            _destinationHash,                // 16-byte destination hash (from identity)
             RNS_PACKET_ANNOUNCE,             // packet_type = ANNOUNCE
-            RNS_DEST_PLAIN,                  // destination_type = PLAIN (unencrypted broadcast)
+            RNS_DEST_SINGLE,                // destination_type = SINGLE (identity-associated)
             RNS_PROPAGATION_BROADCAST,       // propagation = broadcast
-            RNS_CONTEXT_NONE,                // context
+            RNS_CONTEXT_NONE,                // context = NONE
             0,                               // hops = 0 (originator)
-            announcePayload))                // payload contains source address
+            announcePayload))                // payload: pub_key + name_hash + random_hash + sig
         {
             _interfaceManager.broadcastAnnounce(buffer, len); // Use InterfaceManager to send
             // blink LED briefly to show we're alive
@@ -384,7 +399,6 @@ void ReticulumNode::sendAnnounceIfNeeded() {
              DebugSerial.println("! ERROR: Failed to serialize own Announce packet!");
         }
         _last_announce_time = now; // Reset timer *after* sending attempt
-        // _routingTable.print(); // Optional: Print table after sending announce
     }
 }
 

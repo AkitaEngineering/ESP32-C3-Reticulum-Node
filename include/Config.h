@@ -302,13 +302,26 @@ extern const char *BT_DEVICE_NAME;
 
 const int EEPROM_ADDR_NODE = 0;  // 8 bytes
 const int EEPROM_ADDR_PKTID = 8; // 2 bytes (Start after node address)
-const int EEPROM_SIZE = 16;      // Min size needed (8+2 = 10, use 16 or 32)
+// Identity keys stored at offsets 16..83 (see RNSCrypto.h for layout)
+const int EEPROM_SIZE = 128;     // Increased for RNS identity keypair storage
 
 // --- Reticulum Network Parameters ---
 const size_t RNS_ADDRESS_SIZE = 8;
-const size_t RNS_MAX_PAYLOAD = 200; // Max data payload size (adjust based on memory/MTU)
-const uint16_t RNS_UDP_PORT = 4242; // Default Reticulum UDP port
-const uint8_t MAX_HOPS = 15;        // Max hop count for packets
+// Official Reticulum MTU is 500 bytes. The maximum data payload depends on
+// header type: Header1 = 500-19 = 481, Header2 = 500-35 = 465.  We use the
+// smaller value so serialised packets never exceed MTU regardless of header.
+const size_t RNS_MTU = 500;           // Official Reticulum MTU
+const size_t RNS_MAX_PAYLOAD = 465;   // Conservative: MTU - HEADER_2_SIZE (35)
+const uint16_t RNS_UDP_PORT = 4242;   // Default Reticulum UDP port
+const uint8_t MAX_HOPS = 128;         // Official PATHFINDER_M (Transport.py)
+
+// RNS application name used for destination hash computation.
+// Format: "app_name.aspect" e.g. "esp32.node"
+// This must match the name used when creating Destination objects on reference
+// RNS peers that want to communicate with this node.
+#ifndef RNS_APP_NAME
+#define RNS_APP_NAME "esp32.node"
+#endif
 
 // --- Timing & Intervals (milliseconds) ---
 const uint16_t PACKET_ID_SAVE_INTERVAL = 100; // Save counter every N packets generated
@@ -458,13 +471,41 @@ enum class InterfaceType {
     IPFS         // IPFS content addressing (virtual interface)
 };
 
-// --- Packet Contexts (Includes Link and Local Command) ---
-#define RNS_CONTEXT_NONE        0x00
-#define RNS_CONTEXT_LINK_REQ    0xA1 // Request to establish link
-#define RNS_CONTEXT_LINK_CLOSE  0xA2 // Request to close link
-#define RNS_CONTEXT_LINK_DATA   0xA3 // Data packet over an established link
-#define RNS_CONTEXT_ACK         0xA4 // Context used in ACK header_type packets
-#define RNS_CONTEXT_LOCAL_CMD   0xFE // Context for local commands via KISS
+// --- Packet Contexts — official values from RNS/Packet.py ---
+#define RNS_CONTEXT_NONE           0x00  // Generic data packet
+#define RNS_CONTEXT_RESOURCE       0x01  // Resource transfer
+#define RNS_CONTEXT_RESOURCE_ADV   0x02  // Resource advertisement
+#define RNS_CONTEXT_RESOURCE_REQ   0x03  // Resource part request
+#define RNS_CONTEXT_RESOURCE_HMU   0x04  // Resource hashmap update
+#define RNS_CONTEXT_RESOURCE_PRF   0x05  // Resource proof
+#define RNS_CONTEXT_RESOURCE_ICL   0x06  // Resource initiator cancel
+#define RNS_CONTEXT_RESOURCE_RCL   0x07  // Resource receiver cancel
+#define RNS_CONTEXT_CACHE_REQUEST  0x08  // Cache request
+#define RNS_CONTEXT_REQUEST        0x09  // Request
+#define RNS_CONTEXT_RESPONSE       0x0A  // Response to request
+#define RNS_CONTEXT_PATH_RESPONSE  0x0B  // Path response
+#define RNS_CONTEXT_COMMAND        0x0C  // Command
+#define RNS_CONTEXT_COMMAND_STATUS 0x0D  // Command status
+#define RNS_CONTEXT_CHANNEL        0x0E  // Link channel data
+#define RNS_CONTEXT_KEEPALIVE      0xFA  // Keepalive
+#define RNS_CONTEXT_LINKIDENTIFY   0xFB  // Link peer identification proof
+#define RNS_CONTEXT_LINKCLOSE      0xFC  // Link close message
+#define RNS_CONTEXT_LINKPROOF      0xFD  // Link packet proof
+#define RNS_CONTEXT_LRRTT          0xFE  // Link request round-trip time
+#define RNS_CONTEXT_LRPROOF        0xFF  // Link request proof
+
+// --- Legacy / node-specific context aliases for the custom link layer ---
+// These map to the official context values where possible.
+// The custom link layer on this node uses a simplified handshake that
+// is NOT compatible with the full RNS link protocol (X25519 + Ed25519
+// ECDH handshake).  These aliases are kept so that the existing
+// simplified link code still compiles, but packets using them will NOT
+// be understood by reference Reticulum peers.
+#define RNS_CONTEXT_LINK_REQ    0xA1  // Custom: simplified link request (node-local)
+#define RNS_CONTEXT_LINK_CLOSE  0xA2  // Custom: simplified link close  (node-local)
+#define RNS_CONTEXT_LINK_DATA   0xA3  // Custom: simplified link data   (node-local)
+#define RNS_CONTEXT_ACK         0xA4  // Custom: simplified ACK         (node-local)
+#define RNS_CONTEXT_LOCAL_CMD   0xB0  // Local commands via KISS (node-specific, never on-air)
 
 // Sequence number size (placed at start of payload for LINK_DATA/ACK)
 const size_t RNS_SEQ_SIZE = 2;

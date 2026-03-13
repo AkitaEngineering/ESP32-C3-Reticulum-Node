@@ -6,7 +6,8 @@
 namespace ReticulumPacket {
 
 // Deserialize packet from official Reticulum wire format
-// Format: [FLAGS 1] [HOPS 1] [DEST_HASH 16] [CONTEXT 1] [DATA]
+// Header Type 1: [FLAGS 1] [HOPS 1] [DEST_HASH 16] [CONTEXT 1] [DATA]
+// Header Type 2: [FLAGS 1] [HOPS 1] [TRANSPORT_ID 16] [DEST_HASH 16] [CONTEXT 1] [DATA]
 bool deserialize(const uint8_t *buffer, size_t len, RnsPacketInfo &info) {
     info.valid = false;
 
@@ -21,31 +22,51 @@ bool deserialize(const uint8_t *buffer, size_t len, RnsPacketInfo &info) {
 
     info.hops = buffer[1];
 
-    // Copy 16-byte destination hash
-    memcpy(info.destination_hash, buffer + 2, RNS_TRUNCATED_HASHLENGTH_BYTES);
+    size_t data_start;
 
-    // Also populate 8-byte destination field with first 8 bytes of hash
-    memcpy(info.destination, buffer + 2, RNS_ADDRESS_SIZE);
-
-    info.context = buffer[18];  // After flags(1) + hops(1) + dest_hash(16)
+    if (info.header_type == RNS_HEADER_2) {
+        // Header Type 2 (transport): transport_id + dest_hash
+        if (len < RNS_HEADER_2_SIZE) {
+            DebugSerial.println("! Deserialize Error: Header Type 2 packet too short.");
+            return false;
+        }
+        // transport_id at bytes 2..17, dest_hash at bytes 18..33, context at byte 34
+        memcpy(info.destination_hash, buffer + 2 + RNS_TRUNCATED_HASHLENGTH_BYTES, RNS_TRUNCATED_HASHLENGTH_BYTES);
+        memcpy(info.destination, buffer + 2 + RNS_TRUNCATED_HASHLENGTH_BYTES, RNS_ADDRESS_SIZE);
+        info.context = buffer[2 + 2 * RNS_TRUNCATED_HASHLENGTH_BYTES]; // byte 34
+        data_start = RNS_HEADER_2_SIZE; // 35
+    } else {
+        // Header Type 1 (normal)
+        memcpy(info.destination_hash, buffer + 2, RNS_TRUNCATED_HASHLENGTH_BYTES);
+        memcpy(info.destination, buffer + 2, RNS_ADDRESS_SIZE);
+        info.context = buffer[18];
+        data_start = RNS_HEADER_1_SIZE; // 19
+    }
 
     // Extract data payload (everything after context byte)
-    size_t data_start = 19;
     if (len > data_start) {
         info.data.assign(buffer + data_start, buffer + len);
         info.payload = info.data;  // Alias for convenience
+    } else {
+        info.data.clear();
+        info.payload.clear();
     }
 
     // Source address is not present in DATA packets (official Reticulum format)
-    // It would only be added by transport nodes (Header 2), which we don't handle yet
     memset(info.source, 0, RNS_ADDRESS_SIZE);
 
-    // For announce packets, source address is carried at the start of the data payload
-    // Format: [SOURCE_ADDR 8] [remaining announce data...]
-    if (info.packet_type == RNS_PACKET_ANNOUNCE && info.data.size() >= RNS_ADDRESS_SIZE) {
-        memcpy(info.source, info.data.data(), RNS_ADDRESS_SIZE);
-        // Strip source prefix from payload alias, keep full data intact
-        info.payload.assign(info.data.begin() + RNS_ADDRESS_SIZE, info.data.end());
+    // For announce packets, the payload contains cryptographic announce data.
+    // Official RNS format (148+ bytes):
+    //   [PUB_KEY 64][NAME_HASH 10][RANDOM_HASH 10][SIGNATURE 64][APP_DATA...]
+    // The "source" for routing purposes is derived from the destination hash
+    // in the packet header. For announces, destination_hash IS the identity
+    // of the announcer. Copy the first 8 bytes of destination_hash as source
+    // address for backward compatibility with internal routing table.
+    if (info.packet_type == RNS_PACKET_ANNOUNCE) {
+        // Use destination_hash (from header) as the source identity for routing
+        memcpy(info.source, info.destination_hash, RNS_ADDRESS_SIZE);
+        // payload = full announce data (kept intact for validation)
+        info.payload = info.data;
     }
 
     // For link-context packets, source/packet_id/sequence_number are encoded in the payload
@@ -70,7 +91,8 @@ bool deserialize(const uint8_t *buffer, size_t len, RnsPacketInfo &info) {
 }
 
 // Serialize packet using official Reticulum wire format
-// Format: [FLAGS 1] [HOPS 1] [DEST_HASH 16] [CONTEXT 1] [DATA]
+// Header Type 1: [FLAGS 1] [HOPS 1] [DEST_HASH 16] [CONTEXT 1] [DATA]
+// Header Type 2: [FLAGS 1] [HOPS 1] [TRANSPORT_ID 16] [DEST_HASH 16] [CONTEXT 1] [DATA]
 bool serialize(uint8_t *buffer, size_t &len,
                const uint8_t* dest_hash_16bytes,
                uint8_t packet_type,
@@ -78,7 +100,10 @@ bool serialize(uint8_t *buffer, size_t &len,
                uint8_t propagation_type,
                uint8_t context,
                uint8_t hops,
-               const std::vector<uint8_t>& data)
+               const std::vector<uint8_t>& data,
+               uint8_t context_flag,
+               uint8_t header_type,
+               const uint8_t* transport_id)
 {
     len = 0;
 
@@ -87,35 +112,44 @@ bool serialize(uint8_t *buffer, size_t &len,
         return false;
     }
 
-    if (data.size() > RNS_MAX_PAYLOAD) {
-        DebugSerial.println("! Serialize Error: Payload exceeds max size.");
-        return false;
-    }
+    size_t header_size = (header_type == RNS_HEADER_2) ? RNS_HEADER_2_SIZE : RNS_HEADER_1_SIZE;
+    size_t total_len = header_size + data.size();
 
-    size_t total_len = RNS_HEADER_1_SIZE + data.size();
     if (total_len > MAX_PACKET_SIZE) {
-        DebugSerial.println("! Serialize Error: Total packet exceeds max size.");
+        DebugSerial.println("! Serialize Error: Total packet exceeds MTU.");
         return false;
     }
 
-    // Build flags byte
-    // Format: [IFAC:1][HeaderType:1][ContextFlag:1][PropType:1][DestType:2][PacketType:2]
+    if (header_type == RNS_HEADER_2 && !transport_id) {
+        DebugSerial.println("! Serialize Error: Header Type 2 requires transport_id.");
+        return false;
+    }
+
+    // Build flags byte (matches official Reticulum: Packet.py get_packed_flags())
+    // Bits: [7:IFAC][6:HeaderType][5:ContextFlag][4:PropType][3-2:DestType][1-0:PacketType]
     uint8_t flags = (packet_type & 0b11) |
                     ((dest_type & 0b11) << 2) |
                     ((propagation_type & 0b1) << 4) |
-                    (0 << 5) |  // context_flag = 0 (unused)
-                    (0 << 6) |  // header_type = 0 (HEADER_1)
+                    ((context_flag & 0b1) << 5) |
+                    ((header_type & 0b1) << 6) |
                     (0 << 7);   // ifac_flag = 0 (no IFAC)
 
     // Assemble packet
     buffer[0] = flags;
     buffer[1] = hops;
-    memcpy(buffer + 2, dest_hash_16bytes, RNS_TRUNCATED_HASHLENGTH_BYTES);
-    buffer[18] = context;
+
+    if (header_type == RNS_HEADER_2) {
+        memcpy(buffer + 2, transport_id, RNS_TRUNCATED_HASHLENGTH_BYTES);
+        memcpy(buffer + 2 + RNS_TRUNCATED_HASHLENGTH_BYTES, dest_hash_16bytes, RNS_TRUNCATED_HASHLENGTH_BYTES);
+        buffer[2 + 2 * RNS_TRUNCATED_HASHLENGTH_BYTES] = context;
+    } else {
+        memcpy(buffer + 2, dest_hash_16bytes, RNS_TRUNCATED_HASHLENGTH_BYTES);
+        buffer[18] = context;
+    }
 
     // Copy data payload if present
     if (!data.empty()) {
-        memcpy(buffer + 19, data.data(), data.size());
+        memcpy(buffer + header_size, data.data(), data.size());
     }
 
     len = total_len;

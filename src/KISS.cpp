@@ -31,9 +31,15 @@ void KISSProcessor::decodeByte(uint8_t byte, InterfaceType interface) {
     // Handle KISS command byte (comes after FEND, before data)
     if (_expectingCommand) {
         _expectingCommand = false;
-        // Command byte: 0x00 = data frame (the only one we care about)
-        // We just skip it and don't store it in the buffer
-        // Other commands (0x01-0x0F) are for TNC configuration - ignore them too
+        // Strip port nibble (upper 4 bits) and keep command (lower 4 bits)
+        // This matches the official Reticulum KISSInterface: byte = byte & 0x0F
+        uint8_t command = byte & 0x0F;
+        // Command byte: 0x00 = data frame (the only one we process)
+        // Other commands (0x01-0x0F) are for TNC configuration - ignore them
+        if (command != 0x00) {
+            // Not a data frame; skip until next FEND
+            _receiveBuffer.clear();
+        }
         return;
     }
 
@@ -60,7 +66,8 @@ void KISSProcessor::decodeByte(uint8_t byte, InterfaceType interface) {
     }
 
     // Store regular or unescaped data byte
-    if (_receiveBuffer.size() < MAX_PACKET_SIZE + 50) { // Allow buffer for KISS overhead + header leeway
+    // HW_MTU is 564 bytes in the official KISSInterface (allows for escape expansion)
+    if (_receiveBuffer.size() < 564) {
         _receiveBuffer.push_back(byte);
     } else {
         // Buffer overflow

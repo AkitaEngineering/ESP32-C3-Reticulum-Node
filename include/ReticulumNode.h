@@ -13,6 +13,7 @@
 #include "InterfaceManager.h"
 #include "RoutingTable.h"
 #include "LinkManager.h" // Include the LinkManager header
+#include "RNSCrypto.h"   // Reticulum-compatible cryptographic identity
 
 // Callback for application layer to receive data from Links
 using AppDataHandler = std::function<void(const uint8_t* source_address, const std::vector<uint8_t>& data)>;
@@ -29,6 +30,7 @@ public:
     InterfaceManager& getInterfaceManager() { return _interfaceManager; }
     LinkManager& getLinkManager() { return _linkManager; }
     RoutingTable& getRoutingTable() { return _routingTable; }
+    RNSCrypto& getIdentity() { return _identity; }
 
     // --- Application Layer Integration ---
     // Sets the handler function for received link data
@@ -78,6 +80,9 @@ private:
     uint8_t _nodeAddress[RNS_ADDRESS_SIZE];
     uint16_t _packetCounter = 0;
     uint16_t _packetIdUnsavedCount = 0;
+
+    RNSCrypto _identity;  // Reticulum-compatible cryptographic identity
+    uint8_t _destinationHash[16]; // 16-byte destination hash derived from identity
 
     RoutingTable _routingTable;       // Owns the routing table instance
     InterfaceManager _interfaceManager; // Owns the interface manager instance
