@@ -26,10 +26,10 @@ struct RouteEntry {
     uint8_t hops = 0;
 };
 
-// Structure to store recent announce IDs (Packet ID + Source Addr prefix)
+// Structure to store recent announce IDs (announce hash + source addr prefix)
 // Used as key in std::map for loop prevention
 struct RecentAnnounceKey {
-    uint16_t packet_id;
+    uint32_t packet_id;
     uint8_t source_prefix[4]; // Use first 4 bytes of source addr
 
     // Need operator< for std::map
@@ -62,8 +62,8 @@ public:
     size_t getRouteCount() const;
 
     // Announce forwarding prevention
-    bool shouldForwardAnnounce(uint16_t packet_id, const uint8_t* source_addr);
-    void markAnnounceForwarded(uint16_t packet_id, const uint8_t* source_addr);
+    bool shouldForwardAnnounce(uint32_t packet_id, const uint8_t* source_addr);
+    void markAnnounceForwarded(uint32_t packet_id, const uint8_t* source_addr);
     void pruneRecentAnnounces(bool force = false);
 
 

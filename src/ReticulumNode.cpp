@@ -560,27 +560,31 @@ void ReticulumNode::processPacketForSelf(const RnsPacketInfo& packetInfo, Interf
         packetInfo.payload[0] == 'p' && packetInfo.payload[1] == 'i' &&
         packetInfo.payload[2] == 'n' && packetInfo.payload[3] == 'g')
     {
-        DebugSerial.println("[Node] Received ping, sending pong reply.");
-        std::vector<uint8_t> pong = {'p','o','n','g'};
-        uint8_t buf[MAX_PACKET_SIZE];
-        size_t outlen = 0;
+        if (Utils::isAllZeros(packetInfo.source, RNS_ADDRESS_SIZE)) {
+            DebugSerial.println("[Node] Received ping without source context; skipping pong reply.");
+        } else {
+            DebugSerial.println("[Node] Received ping, sending pong reply.");
+            std::vector<uint8_t> pong = {'p','o','n','g'};
+            uint8_t buf[MAX_PACKET_SIZE];
+            size_t outlen = 0;
 
-        // Construct 16-byte reply destination from sender's source address
-        // Note: For official-format data packets source is all zeros (no transport header),
-        // so pong only works for announces or when source is carried in the payload.
-        uint8_t replyDestHash[RNS_TRUNCATED_HASHLENGTH_BYTES] = {0};
-        memcpy(replyDestHash, packetInfo.source, RNS_ADDRESS_SIZE);
+            // Construct 16-byte reply destination from sender's source address.
+            // The remaining bytes stay zero-initialized because internal routing
+            // uses the 8-byte address prefix.
+            uint8_t replyDestHash[RNS_TRUNCATED_HASHLENGTH_BYTES] = {0};
+            memcpy(replyDestHash, packetInfo.source, RNS_ADDRESS_SIZE);
 
-        if (ReticulumPacket::serialize(buf, outlen,
-                                       replyDestHash,
-                                       RNS_PACKET_DATA,
-                                       RNS_DEST_SINGLE,
-                                       RNS_PROPAGATION_BROADCAST,
-                                       RNS_CONTEXT_NONE,
-                                       0,
-                                       pong))
-        {
-            _interfaceManager.sendPacket(buf, outlen, packetInfo.source, interface);
+            if (ReticulumPacket::serialize(buf, outlen,
+                                           replyDestHash,
+                                           RNS_PACKET_DATA,
+                                           RNS_DEST_SINGLE,
+                                           RNS_PROPAGATION_BROADCAST,
+                                           RNS_CONTEXT_NONE,
+                                           0,
+                                           pong))
+            {
+                _interfaceManager.sendPacket(buf, outlen, packetInfo.source, interface);
+            }
         }
     }
 
@@ -649,7 +653,7 @@ void ReticulumNode::forwardAnnounce(const RnsPacketInfo& packetInfo, InterfaceTy
     uint32_t announceHash = 0;
     for (int i = 0; i < RNS_ADDRESS_SIZE; ++i) announceHash = announceHash * 31 + packetInfo.source[i];
     for (auto b : packetInfo.data) announceHash = announceHash * 31 + b;
-    uint16_t announceKey = (uint16_t)(announceHash & 0xFFFF);
+    uint32_t announceKey = announceHash;
 
     if (!_routingTable.shouldForwardAnnounce(announceKey, packetInfo.source)) {
          // DebugSerial.println("Announce recently forwarded or loop detected. Skipping re-broadcast."); // Verbose

@@ -351,7 +351,7 @@ def main():
         print("  SOME TESTS FAILED - check above for details")
 
     print("\n" + "=" * 60)
-    print("  KNOWN COMPATIBILITY GAPS")
+    print("  REMAINING INTEROP WORK")
     print("=" * 60)
 
     # Clean up reticulum
@@ -360,26 +360,22 @@ def main():
         _reticulum.exit_handler()
         _reticulum = None
     print("""
-  1. ANNOUNCE FORMAT: RESOLVED. The ESP32 now sends full cryptographic
-     announces: [PUB_KEY 64][NAME_HASH 10][RANDOM_HASH 10][SIG 64].
-     These will be validated by reference RNS peers.
+  1. ANNOUNCE FORMAT: VERIFIED. This script confirms the firmware uses the
+      reference announce layout [PUB_KEY 64][NAME_HASH 10][RANDOM_HASH 10][SIG 64].
 
-  2. LINK PROTOCOL: The ESP32 uses a custom simplified link layer with
-     context bytes 0xA1-0xA4. Reference RNS uses an X25519 ECDH
-     handshake with context bytes LRPROOF=0xFF, LINKPROOF=0xFD, etc.
-     => Links between ESP32 and reference RNS nodes will NOT work.
-     => FIX: Implement the full RNS link handshake protocol.
-     => WORKAROUND: Use PLAIN destinations for broadcast messaging.
+  2. LINK PROTOCOL: NOT EXERCISED HERE. The firmware contains link-handshake
+      code, but this script does not run a live LINKREQUEST/LRPROOF/LRRTT exchange
+      against real hardware.
+      => NEXT STEP: perform an on-device interop test with a reference RNS peer.
 
-  3. ENCRYPTION: The ESP32 sends PLAIN/unencrypted packets only.
-     SINGLE destination packets require X25519 ephemeral encryption.
-     => Can only communicate using PLAIN (broadcast) destinations.
-     => OK for mesh relay and broadcast messaging use cases.
+  3. ENCRYPTED SINGLE DESTINATIONS: NOT EXERCISED HERE. This script validates
+      hashes, flags, KISS framing, plain packet format, and announce structure.
+      It does not verify a live encrypted SINGLE-destination round-trip.
+      => NEXT STEP: add a hardware-backed encrypted interoperability test.
 
-  4. IDENTITY: RESOLVED. The ESP32 now generates and persists a proper
-     Ed25519 + X25519 keypair. Identity hash = SHA256(pub_key)[:16].
-     Destination hash = SHA256(name_hash + identity_hash)[:16].
-     Keys are stored in EEPROM and persist across reboots.
+  4. IDENTITY: VERIFIED. The firmware now generates and persists a proper
+      Ed25519 + X25519 keypair. Identity hash = SHA256(pub_key)[:16].
+      Destination hash = SHA256(name_hash + identity_hash)[:16].
 """)
 
     return 0 if all_pass else 1

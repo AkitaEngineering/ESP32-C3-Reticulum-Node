@@ -421,13 +421,12 @@ bool InterfaceManager::sendPacketViaEspNowInternal(const uint8_t *packetBuffer, 
     if (!packetBuffer || packetLen == 0) return false;
 
     const uint8_t* targetMac = espnow_broadcast_mac; // Default to broadcast
-    RouteEntry* route = nullptr;
 
 #if ESP_NOW_INDISCRIMINATE_BROADCAST
     (void)destinationAddr;
 #else
     if (destinationAddr != nullptr) { // If destination provided, try to find route
-        route = _routingTableRef.findRoute(destinationAddr);
+        RouteEntry* route = _routingTableRef.findRoute(destinationAddr);
          if (route && route->interface == InterfaceType::ESP_NOW) {
              targetMac = route->next_hop_mac;
              // Ensure peer exists - crucial for direct send

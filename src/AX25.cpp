@@ -162,7 +162,6 @@ bool AX25::decodeFrame(const uint8_t* data, size_t len, Frame& frame) {
     frame.fcs = data[offset] | (data[offset + 1] << 8);
     
     // Verify FCS (excluding flags and FCS itself)
-    uint16_t calculatedFCS = calculateFCS(data + 1, offset - 1);
     return verifyFCS(data + 1, offset - 1, frame.fcs);
 }
 

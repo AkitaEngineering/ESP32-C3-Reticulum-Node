@@ -154,7 +154,7 @@ size_t RoutingTable::getRouteCount() const {
 }
 
 // --- Announce Forwarding Prevention ---
-bool RoutingTable::shouldForwardAnnounce(uint16_t packet_id, const uint8_t* source_addr) {
+bool RoutingTable::shouldForwardAnnounce(uint32_t packet_id, const uint8_t* source_addr) {
     if (!source_addr) return false;
     pruneRecentAnnounces();
     RecentAnnounceKey key;
@@ -163,7 +163,7 @@ bool RoutingTable::shouldForwardAnnounce(uint16_t packet_id, const uint8_t* sour
     return _recentAnnounces.find(key) == _recentAnnounces.end();
 }
 
-void RoutingTable::markAnnounceForwarded(uint16_t packet_id, const uint8_t* source_addr) {
+void RoutingTable::markAnnounceForwarded(uint32_t packet_id, const uint8_t* source_addr) {
     if (!source_addr) return;
     RecentAnnounceKey key;
     key.packet_id = packet_id;

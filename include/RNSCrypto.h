@@ -248,8 +248,9 @@ public:
         random_hash[2] = (r1 >> 16) & 0xFF;
         random_hash[3] = (r1 >> 24) & 0xFF;
         random_hash[4] = (r2 >> 0) & 0xFF;
-        // Low 5 bytes of millis/1000 as a rough timestamp
-        unsigned long ts = millis() / 1000;
+        // Low 5 bytes of seconds-since-boot as a rough timestamp.
+        // Use 64-bit storage so the top byte is defined on 32-bit targets.
+        uint64_t ts = static_cast<uint64_t>(millis()) / 1000ULL;
         random_hash[5] = (ts >> 32) & 0xFF;
         random_hash[6] = (ts >> 24) & 0xFF;
         random_hash[7] = (ts >> 16) & 0xFF;
