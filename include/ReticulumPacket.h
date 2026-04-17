@@ -58,7 +58,7 @@ struct RnsPacketInfo {
     bool valid = false;
 
     // Convenience fields populated by deserialize()
-    uint8_t destination[RNS_ADDRESS_SIZE] = {0};  // First 8 bytes of destination_hash
+    uint8_t destination[RNS_ADDRESS_SIZE] = {0};  // 8-byte routing prefix from destination_hash
     uint8_t source[RNS_ADDRESS_SIZE] = {0};       // Extracted from payload prefix (announce/link)
     uint16_t packet_id = 0;                        // For link-context packets
     uint16_t sequence_number = 0;                  // For link-context packets

@@ -19,6 +19,8 @@ void test_serialize_deserialize_roundtrip() {
     TEST_ASSERT_EQUAL_UINT8(RNS_DEST_PLAIN, info.destination_type);
     TEST_ASSERT_EQUAL_UINT8(0, info.hops);
     TEST_ASSERT_EQUAL_UINT8(RNS_CONTEXT_NONE, info.context);
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(dest_hash, info.destination_hash, sizeof(dest_hash));
+    TEST_ASSERT_EQUAL_UINT8_ARRAY(dest_hash, info.destination, RNS_ADDRESS_SIZE);
     TEST_ASSERT_EQUAL_UINT32(data.size(), info.data.size());
     for (size_t i = 0; i < data.size(); ++i) {
         TEST_ASSERT_EQUAL_UINT8(data[i], info.data[i]);

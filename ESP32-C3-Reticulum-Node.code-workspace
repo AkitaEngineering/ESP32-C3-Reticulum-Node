@@ -7,5 +7,11 @@
 			"path": "../Reticulum"
 		}
 	],
-	"settings": {}
+	"settings": {
+		"idf.currentSetup": "/home/shaun/.platformio/packages/framework-espidf",
+		"idf.customExtraVars": {
+			"IDF_TARGET": "esp32c3",
+			"GIT_DISCOVERY_ACROSS_FILESYSTEM": "1"
+		}
+	}
 }

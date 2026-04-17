@@ -1,3 +1,6 @@
-# main component intentionally left empty to avoid duplicate-target builds for the esp-idf PlatformIO environment
-# The minimal bare blink is built via `bare_blink.c` in `src/` for the `esp32-c3-bare` env
+if(DEFINED ENV{PIOENV})
+	# PlatformIO's esp-idf bare environment provides its own app_main source.
+else()
+	idf_component_register(SRCS "main.c" INCLUDE_DIRS ".")
+endif()
 

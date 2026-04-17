@@ -83,7 +83,7 @@ void LinkManager::handleLinkRequest(const RnsPacketInfo& packetInfo,
     hashable[h_off++] = flags & 0x0F;  // Only lower nibble for hashing
 
     // dest_hash (16 bytes)
-    memcpy(hashable + h_off, packetInfo.destination, 16); h_off += 16;
+    memcpy(hashable + h_off, packetInfo.destination_hash, 16); h_off += 16;
 
     // context byte
     hashable[h_off++] = packetInfo.context;
@@ -134,7 +134,7 @@ void LinkManager::handleLinkRequest(const RnsPacketInfo& packetInfo,
 
 void LinkManager::handleLinkPacket(const RnsPacketInfo& packetInfo) {
     // For link-addressed packets, the destination field IS the link_id
-    auto link = findLink(packetInfo.destination);
+    auto link = findLink(packetInfo.destination_hash);
     if (!link) {
         // Not found — could be LRPROOF for an initiator link (look up by link_id)
         // (initiator outbound links would also be in _activeLinks)

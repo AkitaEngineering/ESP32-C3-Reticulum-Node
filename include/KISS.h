@@ -30,6 +30,7 @@ private:
     std::vector<uint8_t> _receiveBuffer;
     bool _inEscapeState = false;
     bool _expectingCommand = true;  // After FEND, expect command byte next
+    bool _ignoreUntilFend = false;
     PacketHandler _packetHandler; // Stores the callback function
 };
 

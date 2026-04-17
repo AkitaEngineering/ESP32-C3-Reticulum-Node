@@ -6,6 +6,7 @@
 KISSProcessor::KISSProcessor(PacketHandler handler) :
     _inEscapeState(false),
     _expectingCommand(true),  // Start expecting command byte after first FEND
+    _ignoreUntilFend(false),
     _packetHandler(handler)
 {
      // Reserve some buffer space upfront if desired
@@ -25,6 +26,7 @@ void KISSProcessor::decodeByte(uint8_t byte, InterfaceType interface) {
         // Ignore FEND if buffer is empty (start padding or multiple FENDs)
         _inEscapeState = false; // Reset escape state on FEND
         _expectingCommand = true; // Next non-FEND byte will be command byte
+        _ignoreUntilFend = false;
         return; // Done processing this FEND byte
     }
 
@@ -37,9 +39,14 @@ void KISSProcessor::decodeByte(uint8_t byte, InterfaceType interface) {
         // Command byte: 0x00 = data frame (the only one we process)
         // Other commands (0x01-0x0F) are for TNC configuration - ignore them
         if (command != 0x00) {
-            // Not a data frame; skip until next FEND
+            // Not a data frame; discard the rest of this frame until FEND.
             _receiveBuffer.clear();
+            _ignoreUntilFend = true;
         }
+        return;
+    }
+
+    if (_ignoreUntilFend) {
         return;
     }
 
@@ -54,7 +61,8 @@ void KISSProcessor::decodeByte(uint8_t byte, InterfaceType interface) {
              DebugSerial.print("! KISS Decode Error: Invalid escape sequence on interface "); DebugSerial.println(static_cast<int>(interface));
              _receiveBuffer.clear(); // Discard partial packet
              _inEscapeState = false; // Reset escape state
-             _expectingCommand = true; // Reset to expecting command
+               _expectingCommand = false;
+               _ignoreUntilFend = true;
              return; // Discard this byte too
         }
         _inEscapeState = false; // Handled escape sequence
@@ -74,7 +82,8 @@ void KISSProcessor::decodeByte(uint8_t byte, InterfaceType interface) {
         DebugSerial.print("! KISS Decode Error: Packet buffer overflow on interface "); DebugSerial.println(static_cast<int>(interface));
         _receiveBuffer.clear(); // Discard oversized packet
         _inEscapeState = false; // Reset escape state
-        _expectingCommand = true; // Reset to expecting command
+        _expectingCommand = false;
+        _ignoreUntilFend = true;
         // If overflow occurs, the current packet is lost. FEND will reset.
     }
 }

@@ -2,6 +2,8 @@
 #include "ReticulumNode.h"
 #include "Utils.h"
 
+#ifndef PIO_UNIT_TESTING
+
 // USB PID matches the bootloader so Windows can use the same installed
 // CDC driver.  The previous strategy of flipping the PID caused the host
 // to treat the device as unknown, which made COM disappear entirely (beep
@@ -157,3 +159,5 @@ void loop()
   }
 #endif
 }
+
+#endif
