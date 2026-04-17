@@ -408,10 +408,10 @@ void ReticulumNode::sendAnnounceIfNeeded() {
             announcePayload))                // payload: pub_key + name_hash + random_hash + sig
         {
             _interfaceManager.broadcastAnnounce(buffer, len); // Use InterfaceManager to send
-            // blink LED briefly to show we're alive
-            setStatusLed(true);
-            delay(20);
+            // Pulse the LED briefly but restore the steady-on boot-complete state.
             setStatusLed(false);
+            delay(20);
+            setStatusLed(true);
         } else {
              DebugSerial.println("! ERROR: Failed to serialize own Announce packet!");
         }

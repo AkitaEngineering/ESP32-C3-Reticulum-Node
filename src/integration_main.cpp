@@ -132,7 +132,8 @@ void setup() {
         setStatusLed(((millis() / 250UL) & 1U) != 0U);
         delay(10);
     }
-    setStatusLed(Serial);
+    const bool usbEnumerated = Serial;
+    setStatusLed(false);
 
     RNSIdentity::destination_hash(getConfiguredAppName(), nullptr, plainDestinationHash);
 
@@ -142,6 +143,8 @@ void setup() {
     DebugSerial.println("===================================");
     DebugSerial.print("[ITG] Role: ");
     DebugSerial.println(roleName());
+    DebugSerial.print("[ITG] USB CDC: ");
+    DebugSerial.println(usbEnumerated ? "ready" : "not ready during initial wait");
     DebugSerial.print("[ITG] App Name: ");
     DebugSerial.println(getConfiguredAppName());
     DebugSerial.print("[ITG] Dest hash: ");
@@ -150,6 +153,7 @@ void setup() {
 
     reticulumNode.setup();
     reticulumNode.setAppDataHandler(onAppData);
+    setStatusLed(true);
 
 #if INTEGRATION_NODE_ROLE
     lastSendMs = millis() - INTEGRATION_SEND_INTERVAL_MS + 1000UL;

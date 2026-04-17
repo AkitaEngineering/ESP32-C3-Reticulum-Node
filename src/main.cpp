@@ -68,13 +68,13 @@ void setup()
     setStatusLed(((millis() / 250) & 1));
     delay(10);
   }
-  // leave LED on if enumeration succeeded, off otherwise
-  setStatusLed(Serial);
+  const bool usbEnumerated = Serial;
+  setStatusLed(false);
   // small delay to let host settle
   delay(100);
 
   // Diagnostic early print to confirm USB is up (if it is)
-  if (Serial) {
+  if (usbEnumerated) {
     DebugSerial.println("[BOOT] DebugSerial initialized (early)");
   } else {
     DebugSerial.println("[BOOT] Serial not available after initial wait");
@@ -92,6 +92,9 @@ void setup()
 
   // Register the application data handler
   reticulumNode.setAppDataHandler(myAppDataReceiver);
+
+  // Steady LED means application boot completed successfully.
+  setStatusLed(true);
 
   DebugSerial.println("-----------------------------------");
   DebugSerial.println(" Setup Complete. Entering main loop.");
