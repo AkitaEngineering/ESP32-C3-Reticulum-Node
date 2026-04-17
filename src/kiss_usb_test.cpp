@@ -12,10 +12,7 @@
 #include <esp_now.h>
 #include <esp_wifi.h>
 #include <EEPROM.h>
-
-#ifndef LED_BUILTIN
-#define LED_BUILTIN 2
-#endif
+#include "Config.h"
 
 // Stage toggles — define these via build_flags to isolate
 #ifndef TEST_WIFI
@@ -45,9 +42,9 @@
 
 void blinkN(int n, int ms) {
     for (int i = 0; i < n; i++) {
-        digitalWrite(LED_BUILTIN, HIGH);
+        setStatusLed(true);
         delay(ms);
-        digitalWrite(LED_BUILTIN, LOW);
+        setStatusLed(false);
         delay(ms);
     }
 }
@@ -59,8 +56,8 @@ static void espnow_recv_cb(const uint8_t *mac, const uint8_t *data, int len) {
 }
 
 void setup() {
-    pinMode(LED_BUILTIN, OUTPUT);
-    digitalWrite(LED_BUILTIN, LOW);
+    initStatusLed();
+    setStatusLed(false);
     blinkN(2, 100);
     delay(200);
 
@@ -74,7 +71,7 @@ void setup() {
     Serial1.println("[TEST] Stage: USB wait (5s max)...");
     unsigned long start = millis();
     while (!Serial && millis() - start < 5000) {
-        digitalWrite(LED_BUILTIN, ((millis() / 250) & 1) ? HIGH : LOW);
+        setStatusLed(((millis() / 250) & 1) != 0);
         delay(10);
     }
     Serial1.print("[TEST] Serial=");
@@ -156,7 +153,7 @@ void setup() {
     delay(200);
 #endif
 
-    digitalWrite(LED_BUILTIN, HIGH);
+    setStatusLed(true);
     Serial1.println("[TEST] Setup complete. Entering main loop.");
     Serial1.print("[TEST] Free heap: ");
     Serial1.println(ESP.getFreeHeap());

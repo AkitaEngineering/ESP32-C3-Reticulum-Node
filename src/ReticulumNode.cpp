@@ -392,9 +392,9 @@ void ReticulumNode::sendAnnounceIfNeeded() {
         {
             _interfaceManager.broadcastAnnounce(buffer, len); // Use InterfaceManager to send
             // blink LED briefly to show we're alive
-            digitalWrite(LED_BUILTIN, HIGH);
+            setStatusLed(true);
             delay(20);
-            digitalWrite(LED_BUILTIN, LOW);
+            setStatusLed(false);
         } else {
              DebugSerial.println("! ERROR: Failed to serialize own Announce packet!");
         }

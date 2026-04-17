@@ -151,12 +151,12 @@ void InterfaceManager::setupSerial() {
 }
 
 void InterfaceManager::setupWiFi() {
-    WiFi.disconnect(true);  // Disconnect and turn off WiFi
-    WiFi.mode(WIFI_OFF);   // Ensure WiFi is off before reconfiguring
-    delay(100);            // Small delay to ensure WiFi is fully off
-    
-    // STA mode is required for ESP-NOW — always enable it
+    // On ESP32-C3 the USB CDC controller shares clocking with the radio
+    // subsystem.  Cycling through WIFI_OFF can glitch the USB peripheral
+    // and cause the host to see a disconnect.  Go straight to STA mode.
+    WiFi.disconnect(false); // clear any stale connection without turning off radio
     WiFi.mode(WIFI_STA);
+    delay(100);            // let the radio settle
     // ESP-NOW is latency-sensitive; modem sleep can drop/delay frames.
     esp_wifi_set_ps(WIFI_PS_NONE);
 

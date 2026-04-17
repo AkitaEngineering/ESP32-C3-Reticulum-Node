@@ -40,8 +40,8 @@ void myAppDataReceiver(const uint8_t *source_address, const std::vector<uint8_t>
 void setup()
 {
   // initialize built-in LED for status
-  pinMode(LED_BUILTIN, OUTPUT);
-  digitalWrite(LED_BUILTIN, LOW);
+  initStatusLed();
+  setStatusLed(false);
 
   // Initialize Serial (USB/UART0) for debug output
   DebugSerial.begin(115200);
@@ -64,11 +64,11 @@ void setup()
   unsigned long start = millis();
   while (!Serial && millis() - start < 10000) {
     // blink LED at 2Hz during enumeration
-    digitalWrite(LED_BUILTIN, ((millis() / 250) & 1) ? HIGH : LOW);
+    setStatusLed(((millis() / 250) & 1));
     delay(10);
   }
   // leave LED on if enumeration succeeded, off otherwise
-  digitalWrite(LED_BUILTIN, Serial ? HIGH : LOW);
+  setStatusLed(Serial);
   // small delay to let host settle
   delay(100);
 

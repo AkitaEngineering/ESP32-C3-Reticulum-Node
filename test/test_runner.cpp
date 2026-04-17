@@ -12,7 +12,10 @@ void test_rns_sha256_empty(void);
 void test_rns_name_hash(void);
 
 void setup() {
-    delay(2000);
+    // On ESP32-C3 with ARDUINO_USB_MODE=1, USB CDC must be started
+    // explicitly before any serial output (including Unity test results).
+    Serial.begin(115200);
+    delay(2000);  // let USB CDC enumerate on the host
     UNITY_BEGIN();
     // Run unit tests
     RUN_TEST(test_ed25519_sign_verify);

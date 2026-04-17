@@ -12,6 +12,20 @@
 #define LED_BUILTIN 2  // Common default for many ESP32 boards
 #endif
 
+inline void initStatusLed() {
+#if !defined(RGB_BUILTIN)
+    pinMode(LED_BUILTIN, OUTPUT);
+#endif
+}
+
+inline void setStatusLed(bool on) {
+#if defined(RGB_BUILTIN)
+    neopixelWrite(RGB_BUILTIN, 0, 0, on ? 20 : 0);
+#else
+    digitalWrite(LED_BUILTIN, on ? HIGH : LOW);
+#endif
+}
+
 // --- Debug and Interface Configuration ---
 // Serial port selection can be swapped at compile time. By default
 // the USB/UART0 port (Serial) is used for debug and a hardware UART
