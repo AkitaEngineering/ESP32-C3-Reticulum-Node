@@ -95,6 +95,9 @@ private:
     // Application layer data handler
     AppDataHandler _appDataHandler = nullptr;
 
+    // Runtime-selected Reticulum application name.
+    String _appName;
+
     // Subscribed Groups (loaded from Config)
     std::vector<std::array<uint8_t, RNS_ADDRESS_SIZE>> _subscribedGroups;
 

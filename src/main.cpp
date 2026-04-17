@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #include "ReticulumNode.h"
+#include "RNSIdentity.h"
 #include "Utils.h"
 
 #ifndef PIO_UNIT_TESTING
@@ -118,9 +119,8 @@ void loop()
   if (millis() - last_send >= 10000) {
     last_send = millis();
 
-    // Full 16-byte destination hash for PLAIN destination ["esp32", "node"]
-    uint8_t dest_hash[16] = {0xB6, 0x01, 0x0E, 0xA1, 0x1F, 0xDF, 0xC0, 0x4E,
-                             0x01, 0x88, 0x3B, 0xD6, 0x06, 0xC5, 0x42, 0xD7};
+    uint8_t dest_hash[16] = {0};
+    RNSIdentity::destination_hash(getConfiguredAppName(), nullptr, dest_hash);
 
     // Prepare message payload
     const char* msg = "Hello from ESP32";

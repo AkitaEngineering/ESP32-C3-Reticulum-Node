@@ -1,5 +1,6 @@
 {
-  "node_name": "esp32-rns-node",
+  "node_name": "",
+  "rns_app_name": "esp32.node",
   "wifi": {
     "ssid": "YOUR_SSID",
     "password": "YOUR_PASSWORD"
@@ -9,12 +10,6 @@
     "ssid": 0,
     "symbol": "[",
     "comment": "Reticulum"
-  },
-  "interfaces": {
-    "wifi_udp": true,
-    "esp_now": false,
-    "lora": false,
-    "ham_modem": false
   },
   "logging": {
     "level": "info"

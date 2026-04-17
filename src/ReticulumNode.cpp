@@ -47,10 +47,12 @@ void ReticulumNode::setup() {
     loadConfig(); // Loads address, packet ID
     printNodeAddress();
 
+    _appName = getConfiguredAppName();
+
     // Initialize RNS cryptographic identity (loads from EEPROM or generates new)
     if (_identity.begin()) {
         // Compute destination hash for this node's announce destination
-        _identity.getDestinationHash(RNS_APP_NAME, _destinationHash);
+        _identity.getDestinationHash(_appName.c_str(), _destinationHash);
         DebugSerial.print("[Identity] Hash: ");
         Utils::printBytes(_identity.getIdentityHash(), 16, DebugSerial);
         DebugSerial.println();
@@ -61,7 +63,21 @@ void ReticulumNode::setup() {
         LOG_ERROR("Failed to initialize RNS identity!");
     }
 
-    _subscribedGroups = SUBSCRIBED_GROUPS; // Copy groups from Config.h
+    _subscribedGroups = SUBSCRIBED_GROUPS; // Copy extra groups from Config.h
+    uint8_t plainDestinationHash[16] = {0};
+    RNSIdentity::destination_hash(_appName.c_str(), nullptr, plainDestinationHash);
+    std::array<uint8_t, RNS_ADDRESS_SIZE> defaultPlainGroup = {0};
+    memcpy(defaultPlainGroup.data(), plainDestinationHash, RNS_ADDRESS_SIZE);
+    bool hasDefaultPlainGroup = false;
+    for (const auto& group : _subscribedGroups) {
+        if (group == defaultPlainGroup) {
+            hasDefaultPlainGroup = true;
+            break;
+        }
+    }
+    if (!hasDefaultPlainGroup) {
+        _subscribedGroups.insert(_subscribedGroups.begin(), defaultPlainGroup);
+    }
 
     // runtime sanity checks
     if (strlen(WIFI_SSID) == 0 || strlen(WIFI_PASSWORD) == 0) {
@@ -350,6 +366,7 @@ void ReticulumNode::processDebugCommands() {
 void ReticulumNode::printStatus() {
     DebugSerial.println("=== Node Status ===");
     DebugSerial.print("  Address: ");  printNodeAddress();
+    DebugSerial.print("  App Name: "); DebugSerial.println(_appName);
     DebugSerial.print("  Uptime: ");   DebugSerial.print(millis() / 1000); DebugSerial.println("s");
     DebugSerial.print("  Free Heap: "); DebugSerial.println(ESP.getFreeHeap());
     DebugSerial.print("  Routes: ");   DebugSerial.println(_routingTable.getRouteCount());
@@ -377,7 +394,7 @@ void ReticulumNode::sendAnnounceIfNeeded() {
         // Build cryptographic announce payload matching reference RNS:
         // [PUB_KEY 64][NAME_HASH 10][RANDOM_HASH 10][SIGNATURE 64][APP_DATA...]
         // signed_data = dest_hash + pub_key + name_hash + random_hash + app_data
-        std::vector<uint8_t> announcePayload = _identity.buildAnnouncePayload(RNS_APP_NAME);
+        std::vector<uint8_t> announcePayload = _identity.buildAnnouncePayload(_appName.c_str());
 
         uint8_t buffer[MAX_PACKET_SIZE];
         size_t len = 0;

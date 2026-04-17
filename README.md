@@ -110,6 +110,7 @@ Example Reticulum configuration (`~/.reticulum/config`):
 | `esp32-c3-kiss-usb` | KISS TNC over USB CDC |
 | `esp32-c3-demo-sender` | Sends periodic test packets (demo mode) |
 | `esp32-c3-prod` | Production build (`-Os`, no debug, no demo traffic) |
+| `esp32-c3-prod-usb` | Production USB/KISS build with runtime JSON naming config enabled |
 | `esp32-c3-prod-metrics` | Production + metrics/heartbeat endpoint |
 | `esp32-c3-web` | Web UI, REST API, OTA, JSON config |
 | `esp32-c3-debug` | WiFi disabled, `-Og` debug optimizations |
@@ -122,6 +123,23 @@ Example Reticulum configuration (`~/.reticulum/config`):
 | `heltec_wifi_lora_32_V3` | Heltec LoRa32 v3 (LoRa enabled) |
 
 Build all environments: `pio run`
+
+### Runtime JSON Config
+
+The default production target is `esp32-c3-prod-usb`. It reads `/config.json` from SPIFFS at boot for runtime naming.
+
+- `node_name`: optional. Leave empty to use the per-device MAC-derived default such as `rns-6497AC`.
+- `rns_app_name`: optional Reticulum application name. Defaults to `esp32.node`.
+- `data/config.json`: the filesystem image uploaded by PlatformIO.
+- `data/config.example.json`: editable template for provisioning or per-device variants.
+
+Update runtime naming without rebuilding firmware:
+
+```bash
+pio run -e esp32-c3-prod-usb -t uploadfs --upload-port /dev/serial/by-id/<board>
+```
+
+Only the runtime naming keys above are consumed by the current production build. Other keys in the JSON document are used by web/provisioning paths when those features are enabled.
 
 ## Project Structure
 
@@ -221,12 +239,12 @@ The ESP32-C3's built-in USB Serial/JTAG controller has some important behaviors:
 
 ### pyserial and ESP32-C3
 
-Opening the port with pyserial's default settings triggers DTR/RTS, resetting the board into bootloader mode. To avoid this, use raw file descriptors with `O_NOCTTY` or disable DTR/RTS immediately after opening:
+For host-side capture, pyserial is more reliable than a raw `open()` because asserting DTR makes the USB CDC connection become active consistently. Keep RTS low to avoid unwanted reset behavior:
 
 ```python
 import serial
 ser = serial.Serial(port, 115200, dsrdtr=False, rtscts=False)
-ser.dtr = False
+ser.dtr = True
 ser.rts = False
 ```
 

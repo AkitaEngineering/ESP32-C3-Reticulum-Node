@@ -254,11 +254,12 @@ void InterfaceManager::setupESPNow() {
 
 #if BLUETOOTH_CLASSIC_AVAILABLE
 void InterfaceManager::setupBluetooth() {
-     if (!_serialBT.begin(BT_DEVICE_NAME)) {
+    const char* deviceName = getConfiguredNodeName();
+      if (!_serialBT.begin(deviceName)) {
          DebugSerial.println("! ERROR: Bluetooth Serial initialization failed!");
      } else {
         DebugSerial.print("IF: Bluetooth ready. Device Name: ");
-        DebugSerial.println(BT_DEVICE_NAME);
+          DebugSerial.println(deviceName);
     }
 }
 #endif
@@ -618,13 +619,28 @@ void InterfaceManager::sendPacketViaSerial(const uint8_t *packetBuffer, size_t p
     std::vector<uint8_t> kissEncoded;
     KISSProcessor::encode(packetBuffer, packetLen, kissEncoded);
 #if defined(KISS_OVER_USB)
-    if (!Serial) {
+    size_t written = KissSerial.write(kissEncoded.data(), kissEncoded.size());
+    if (written == kissEncoded.size()) {
+        return;
+    }
+
+    if (written > 0 && written < kissEncoded.size()) {
+        kissEncoded.erase(kissEncoded.begin(), kissEncoded.begin() + written);
+    }
+
+    if (!Serial && written == 0) {
         if (_pendingUsbKissFrames.size() >= MAX_PENDING_USB_KISS_FRAMES) {
             _pendingUsbKissFrames.pop_front();
         }
         _pendingUsbKissFrames.push_back(std::move(kissEncoded));
         return;
     }
+
+    if (_pendingUsbKissFrames.size() >= MAX_PENDING_USB_KISS_FRAMES) {
+        _pendingUsbKissFrames.pop_front();
+    }
+    _pendingUsbKissFrames.push_back(std::move(kissEncoded));
+    return;
 #endif
     (void)KissSerial.write(kissEncoded.data(), kissEncoded.size()); // ignore return value
     // if(sent != kissEncoded.size()) { DebugSerial.println("! WARN: Serial write incomplete"); } // Optional check
@@ -632,7 +648,7 @@ void InterfaceManager::sendPacketViaSerial(const uint8_t *packetBuffer, size_t p
 
 #if defined(KISS_OVER_USB)
 void InterfaceManager::flushPendingUsbKissFrames() {
-    if (!Serial || _pendingUsbKissFrames.empty()) {
+    if (_pendingUsbKissFrames.empty()) {
         return;
     }
 
@@ -1029,8 +1045,9 @@ void InterfaceManager::sendEspNowDiagKiss() {
     frame.push_back(KISS_FEND);
 
 #if defined(KISS_OVER_USB)
-    if (Serial) {
-        KissSerial.write(frame.data(), frame.size());
+    size_t written = KissSerial.write(frame.data(), frame.size());
+    if (written == 0) {
+        return;
     }
 #else
     KissSerial.write(frame.data(), frame.size());

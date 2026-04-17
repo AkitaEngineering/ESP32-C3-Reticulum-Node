@@ -175,6 +175,8 @@ void processHttpClient(WiFiClient &client) {
     if (method == "GET" && path == "/api/v1/status") {
         if (!checkAuth(authHeader)) { sendUnauthorized(client); return; }
         DynamicJsonDocument doc(512);
+        doc["node_name"] = getConfiguredNodeName();
+        doc["rns_app_name"] = getConfiguredAppName();
         doc["uptime_s"] = millis() / 1000;
         doc["free_heap"] = ESP.getFreeHeap();
         doc["active_links"] = (int)reticulumNode.getLinkManager().getActiveLinkCount();
@@ -191,8 +193,17 @@ void processHttpClient(WiFiClient &client) {
             DeserializationError err = deserializeJson(doc, f);
             f.close();
             if (err) { sendResponse(client, 500, "text/plain", "Config parse error"); return; }
+            const char* nodeName = doc["node_name"] | "";
+            if (strlen(nodeName) == 0) {
+                doc["node_name"] = getConfiguredNodeName();
+            }
+            const char* appName = doc["rns_app_name"] | "";
+            if (strlen(appName) == 0) {
+                doc["rns_app_name"] = getConfiguredAppName();
+            }
         } else {
-            doc["node_name"] = "esp32-rns-node";
+            doc["node_name"] = getConfiguredNodeName();
+            doc["rns_app_name"] = getConfiguredAppName();
             JsonObject wifi = doc.createNestedObject("wifi");
             wifi["ssid"] = "";
             wifi["password"] = "";

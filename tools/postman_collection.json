@@ -32,7 +32,7 @@
           { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
           { "key": "Content-Type", "value": "application/json", "type": "text" }
         ],
-        "body": { "mode": "raw", "raw": "{\n  \"node_name\": \"esp32-rns-node\",\n  \"wifi\": { \"ssid\": \"myssid\", \"password\": \"mypw\" }\n}" },
+        "body": { "mode": "raw", "raw": "{\n  \"node_name\": \"\",\n  \"rns_app_name\": \"esp32.node\",\n  \"wifi\": { \"ssid\": \"myssid\", \"password\": \"mypw\" }\n}" },
         "url": { "raw": "http://{{host}}:{{port}}/api/v1/config", "host": ["{{host}}"], "port": "{{port}}", "path": ["api","v1","config"] }
       }
     },

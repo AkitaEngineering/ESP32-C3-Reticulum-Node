@@ -78,6 +78,10 @@ inline void setStatusLed(bool on) {
 class DebugSerialShim : public Stream {
 public:
     void begin(unsigned long baud) {
+        if (!DEBUG_ENABLED) {
+            return;
+        }
+
         // initialize whichever serial port is configured for debugging
 #if defined(KISS_OVER_USB) && defined(DEBUG_UART_RX) && (DEBUG_UART_RX >= 0)
         // When KISS owns the USB CDC port, debug goes to a hardware UART.
@@ -306,7 +310,9 @@ extern const char *WIFI_SSID; // <<< CHANGE ME in Config.cpp
 extern const char *WIFI_PASSWORD; // <<< CHANGE ME in Config.cpp
 
 // --- Node Configuration ---
-extern const char *BT_DEVICE_NAME;
+const char* getDefaultDeviceName();
+const char* getConfiguredNodeName();
+const char* getConfiguredAppName();
 
 // Derive Reticulum node address from the chip eFuse MAC on boot.
 // This prevents duplicate logical node addresses when flash/EEPROM images are cloned.
@@ -329,10 +335,9 @@ const size_t RNS_MAX_PAYLOAD = 465;   // Conservative: MTU - HEADER_2_SIZE (35)
 const uint16_t RNS_UDP_PORT = 4242;   // Default Reticulum UDP port
 const uint8_t MAX_HOPS = 128;         // Official PATHFINDER_M (Transport.py)
 
-// RNS application name used for destination hash computation.
-// Format: "app_name.aspect" e.g. "esp32.node"
-// This must match the name used when creating Destination objects on reference
-// RNS peers that want to communicate with this node.
+// Default RNS application name used for destination hash computation.
+// When JSON runtime config is enabled this can be overridden via `rns_app_name`
+// in the saved config.
 #ifndef RNS_APP_NAME
 #define RNS_APP_NAME "esp32.node"
 #endif
@@ -370,10 +375,6 @@ static_assert(MAX_RECENT_ANNOUNCES > 0, "MAX_RECENT_ANNOUNCES must be positive")
 const std::vector<std::array<uint8_t, RNS_ADDRESS_SIZE>> SUBSCRIBED_GROUPS = {
     // {0xCA, 0xFE, 0xBA, 0xBE, 0x00, 0x00, 0x00, 0x01}, // Example Group 1
     // {0xDE, 0xAD, 0xBE, 0xEF, 0x12, 0x34, 0x56, 0x78}  // Example Group 2
-    // Destination hash for PLAIN destination ["esp32", "node"] - calculated by tests/read_from_reticulum.py
-    // This allows the ESP32 to receive messages sent to this destination
-    {0xB6, 0x01, 0x0E, 0xA1, 0x1F, 0xDF, 0xC0, 0x4E} // First 8 bytes of 16-byte hash (truncated for group)
-
 };
 
 // --- LoRa Configuration ---

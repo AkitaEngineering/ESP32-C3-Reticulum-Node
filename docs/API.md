@@ -93,7 +93,9 @@ API request/response schemas
 
 ```json
 {
-  "uptime_ms": 123456,
+  "node_name": "rns-6497AC",
+  "rns_app_name": "esp32.node",
+  "uptime_s": 123,
   "free_heap": 34567,
   "active_links": 2,
   "route_count": 12
@@ -104,7 +106,8 @@ API request/response schemas
 
 ```json
 {
-  "node_name": "esp32-rns-node",
+  "node_name": "",
+  "rns_app_name": "esp32.node",
   "wifi": {"ssid":"","password":""},
   "api": {"token":"","public_key":""}
 }
