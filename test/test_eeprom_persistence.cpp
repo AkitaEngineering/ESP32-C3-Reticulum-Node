@@ -36,3 +36,25 @@ void test_eeprom_persistence(void) {
     TEST_ASSERT_EQUAL_UINT8_ARRAY(addr1, addr2, RNS_ADDRESS_SIZE);
     TEST_ASSERT_EQUAL_UINT16(pkt1, pkt2);
 }
+
+void test_packet_counter_wrap_skips_reserved_values(void) {
+    TEST_ASSERT_TRUE(EEPROM.begin(EEPROM_SIZE));
+    for (int i = 0; i < EEPROM_SIZE; ++i) EEPROM.write(i, 0xFF);
+
+    EEPROM.write(EEPROM_ADDR_PKTID + 0, 0xFF);
+    EEPROM.write(EEPROM_ADDR_PKTID + 1, 0xFE);
+    TEST_ASSERT_TRUE(EEPROM.commit());
+
+    ReticulumNode node;
+    node.loadConfigFromEEPROM();
+
+    TEST_ASSERT_EQUAL_UINT16(0xFFFE, node.getPacketCounter());
+    TEST_ASSERT_EQUAL_UINT16(0x0001, node.getNextPacketId());
+    TEST_ASSERT_EQUAL_UINT16(0x0001, node.getPacketCounter());
+
+    node.saveConfigNow();
+
+    ReticulumNode reloaded;
+    reloaded.loadConfigFromEEPROM();
+    TEST_ASSERT_EQUAL_UINT16(0x0001, reloaded.getPacketCounter());
+}

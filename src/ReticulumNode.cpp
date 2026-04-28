@@ -17,6 +17,28 @@ static WebServerManager _webServerManager;
 #include <ArduinoJson.h>
 #endif
 
+namespace {
+
+uint16_t randomValidPacketCounter() {
+    uint16_t packetCounter = 0;
+    do {
+        packetCounter = static_cast<uint16_t>(esp_random() & 0xFFFFu);
+    } while (packetCounter == 0x0000u || packetCounter == 0xFFFFu);
+
+    return packetCounter;
+}
+
+uint16_t nextValidPacketCounter(uint16_t currentCounter) {
+    currentCounter = static_cast<uint16_t>(currentCounter + 1u);
+    if (currentCounter == 0x0000u || currentCounter == 0xFFFFu) {
+        return 0x0001u;
+    }
+
+    return currentCounter;
+}
+
+} // namespace
+
 // Constructor: Initialize members, especially LinkManager passing *this
 ReticulumNode::ReticulumNode() :
     _packetCounter(0),
@@ -123,7 +145,7 @@ void ReticulumNode::loadConfig() {
     if (!EEPROM.begin(EEPROM_SIZE)) {
         DebugSerial.println("! ERROR: Failed to initialise EEPROM! Using temporary values.");
         generateNodeAddress(); // Generate temp address
-        _packetCounter = random(0,0xFFFF); // Start with random counter
+        _packetCounter = randomValidPacketCounter();
         return;
     }
     LOG_INFO("Loading config from EEPROM...");
@@ -230,7 +252,7 @@ void ReticulumNode::loadPacketCounter() {
     // Validate loaded value: treat 0xFFFF and 0x0000 as uninitialized/corrupt
     if (_packetCounter == 0xFFFF || _packetCounter == 0x0000) {
         uint16_t old = _packetCounter;
-        _packetCounter = (uint16_t)(esp_random() & 0xFFFF);
+        _packetCounter = randomValidPacketCounter();
         DebugSerial.print("Invalid/empty packet counter in EEPROM (read="); DebugSerial.print(old);
         DebugSerial.print(") — using random start: "); DebugSerial.println(_packetCounter);
     } else {
@@ -289,7 +311,7 @@ void ReticulumNode::savePacketCounterIfNeeded() {
 
 // Public method for LinkManager to get next ID
 uint16_t ReticulumNode::getNextPacketId() {
-    _packetCounter++;
+    _packetCounter = nextValidPacketCounter(_packetCounter);
     savePacketCounterIfNeeded(); // Throttle EEPROM writes
     return _packetCounter;
 }
@@ -659,8 +681,8 @@ void ReticulumNode::forwardPacket(const RnsPacketInfo& packetInfo, InterfaceType
 
 // Handles re-broadcasting/forwarding of Announce packets
 void ReticulumNode::forwardAnnounce(const RnsPacketInfo& packetInfo, InterfaceType incomingInterface) {
-    // Check hop limit (allow MAX_HOPS-1 for forwarding)
-    if (packetInfo.hops >= MAX_HOPS -1) {
+    // Check hop limit using the same MAX_HOPS contract as data packets.
+    if (packetInfo.hops >= MAX_HOPS) {
         // DebugSerial.println("Announce hop limit reached for forwarding."); // Verbose
         return;
     }
