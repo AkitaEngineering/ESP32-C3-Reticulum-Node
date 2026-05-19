@@ -58,6 +58,14 @@ Revisions are listed in reverse chronological order (most recent first).
 - Added interface activity accounting in the real ingress/egress paths for serial,
   ESP-NOW, WiFi UDP, LoRa, HAM modem, Bluetooth, and IPFS.
 
+#### Runtime Route Policy
+- Added `routing.interface_priority` runtime config keys so deployments can change
+  interface tie-break priorities without recompiling firmware.
+- `RoutingTable` now uses the effective runtime route-priority policy instead of
+  compile-time macros alone.
+- Added `route_priority_by_interface` to `/api/v1/status` so operators can verify
+  the active routing policy being applied by a node.
+
 #### API Contract Updates
 - Updated `docs/API.md` and `docs/openapi.yaml` to document the expanded status
   schema, interface health payloads, and restart-required config write signaling.

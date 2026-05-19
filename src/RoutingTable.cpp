@@ -31,14 +31,15 @@ bool RoutingTable::routeMatchesCandidate(const RouteEntry& entry, const uint8_t 
 }
 
 int RoutingTable::routePriority(InterfaceType interface) {
+    const RoutePriorityConfig& priorities = getConfiguredRoutePriorities();
     switch (interface) {
-        case InterfaceType::WIFI_UDP: return ROUTE_PRIORITY_WIFI_UDP;
-        case InterfaceType::ESP_NOW: return ROUTE_PRIORITY_ESP_NOW;
-        case InterfaceType::LORA: return ROUTE_PRIORITY_LORA;
-        case InterfaceType::HAM_MODEM: return ROUTE_PRIORITY_HAM_MODEM;
-        case InterfaceType::SERIAL_PORT: return ROUTE_PRIORITY_SERIAL_PORT;
-        case InterfaceType::BLUETOOTH: return ROUTE_PRIORITY_BLUETOOTH;
-        case InterfaceType::IPFS: return ROUTE_PRIORITY_IPFS;
+        case InterfaceType::WIFI_UDP: return priorities.wifi_udp;
+        case InterfaceType::ESP_NOW: return priorities.esp_now;
+        case InterfaceType::LORA: return priorities.lora;
+        case InterfaceType::HAM_MODEM: return priorities.ham_modem;
+        case InterfaceType::SERIAL_PORT: return priorities.serial_port;
+        case InterfaceType::BLUETOOTH: return priorities.bluetooth;
+        case InterfaceType::IPFS: return priorities.ipfs;
         default: return 0;
     }
 }

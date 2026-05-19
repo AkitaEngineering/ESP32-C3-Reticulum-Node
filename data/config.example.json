@@ -5,6 +5,17 @@
     "ssid": "YOUR_SSID",
     "password": "YOUR_PASSWORD"
   },
+  "routing": {
+    "interface_priority": {
+      "wifi_udp": 50,
+      "esp_now": 40,
+      "lora": 30,
+      "ham_modem": 25,
+      "serial_port": 15,
+      "bluetooth": 10,
+      "ipfs": 5
+    }
+  },
   "aprs": {
     "callsign": "N0CALL",
     "ssid": 0,

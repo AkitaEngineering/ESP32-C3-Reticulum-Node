@@ -105,6 +105,17 @@ static void appendRouteCandidateCounts(JsonObject routeCounts, RoutingTable &rou
     routeCounts["ipfs"] = (int)routingTable.getRouteCandidateCountForInterface(InterfaceType::IPFS);
 }
 
+static void appendRoutePriorityConfig(JsonObject routePriorities) {
+    const RoutePriorityConfig& priorities = getConfiguredRoutePriorities();
+    routePriorities["serial_port"] = priorities.serial_port;
+    routePriorities["esp_now"] = priorities.esp_now;
+    routePriorities["wifi_udp"] = priorities.wifi_udp;
+    routePriorities["bluetooth"] = priorities.bluetooth;
+    routePriorities["lora"] = priorities.lora;
+    routePriorities["ham_modem"] = priorities.ham_modem;
+    routePriorities["ipfs"] = priorities.ipfs;
+}
+
 static void appendInterfaceHealthObject(JsonObject interfaces, const char* name, const InterfaceHealthSnapshot &snapshot) {
     JsonObject interfaceDoc = interfaces.createNestedObject(name);
     interfaceDoc["supported"] = snapshot.supported;
@@ -249,6 +260,8 @@ void processHttpClient(WiFiClient &client) {
         doc["wifi_ip"] = wifiConnected ? WiFi.localIP().toString() : String("");
         JsonObject routeCounts = doc.createNestedObject("route_candidates_by_interface");
         appendRouteCandidateCounts(routeCounts, routingTable);
+        JsonObject routePriorities = doc.createNestedObject("route_priority_by_interface");
+        appendRoutePriorityConfig(routePriorities);
         JsonObject interfaces = doc.createNestedObject("interfaces");
         appendInterfaceHealth(interfaces, interfaceManager);
         doc["restart_required"] = restartRequired;

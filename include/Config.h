@@ -309,10 +309,13 @@ extern DebugSerialShim DebugSerial; // Use USB/UART0 for debug (Arduino Serial M
 extern const char *WIFI_SSID; // <<< CHANGE ME in Config.cpp
 extern const char *WIFI_PASSWORD; // <<< CHANGE ME in Config.cpp
 
+struct RoutePriorityConfig;
+
 // --- Node Configuration ---
 const char* getDefaultDeviceName();
 const char* getConfiguredNodeName();
 const char* getConfiguredAppName();
+const RoutePriorityConfig& getConfiguredRoutePriorities();
 void reloadRuntimeConfigCache();
 bool hasRuntimeConfigFile();
 
@@ -392,6 +395,16 @@ const size_t MAX_RECENT_ANNOUNCES = 40; // Max announce IDs to remember for loop
 #ifndef ROUTE_PRIORITY_IPFS
 #define ROUTE_PRIORITY_IPFS 5
 #endif
+
+struct RoutePriorityConfig {
+    int wifi_udp = ROUTE_PRIORITY_WIFI_UDP;
+    int esp_now = ROUTE_PRIORITY_ESP_NOW;
+    int lora = ROUTE_PRIORITY_LORA;
+    int ham_modem = ROUTE_PRIORITY_HAM_MODEM;
+    int serial_port = ROUTE_PRIORITY_SERIAL_PORT;
+    int bluetooth = ROUTE_PRIORITY_BLUETOOTH;
+    int ipfs = ROUTE_PRIORITY_IPFS;
+};
 
 // compile‑time sanity
 static_assert(MAX_ROUTES > 0, "MAX_ROUTES must be positive");

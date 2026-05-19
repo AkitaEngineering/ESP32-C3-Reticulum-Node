@@ -16,6 +16,7 @@ struct RuntimeConfigCache {
 	bool initialized = false;
 	char nodeName[48] = {0};
 	char appName[64] = {0};
+	RoutePriorityConfig routePriorities;
 };
 
 RuntimeConfigCache runtimeConfigCache;
@@ -48,6 +49,7 @@ bool loadRuntimeConfigDocument(DynamicJsonDocument& doc) {
 void populateRuntimeConfigCache() {
 	snprintf(runtimeConfigCache.nodeName, sizeof(runtimeConfigCache.nodeName), "%s", getDefaultDeviceName());
 	snprintf(runtimeConfigCache.appName, sizeof(runtimeConfigCache.appName), "%s", RNS_APP_NAME);
+	runtimeConfigCache.routePriorities = RoutePriorityConfig{};
 
 	DynamicJsonDocument doc(1024);
 	if (loadRuntimeConfigDocument(doc)) {
@@ -59,6 +61,20 @@ void populateRuntimeConfigCache() {
 		const char* appName = doc["rns_app_name"] | "";
 		if (appName && appName[0] != '\0') {
 			snprintf(runtimeConfigCache.appName, sizeof(runtimeConfigCache.appName), "%s", appName);
+		}
+
+		JsonObject routing = doc["routing"];
+		if (!routing.isNull()) {
+			JsonObject interfacePriority = routing["interface_priority"];
+			if (!interfacePriority.isNull()) {
+				runtimeConfigCache.routePriorities.wifi_udp = interfacePriority["wifi_udp"] | ROUTE_PRIORITY_WIFI_UDP;
+				runtimeConfigCache.routePriorities.esp_now = interfacePriority["esp_now"] | ROUTE_PRIORITY_ESP_NOW;
+				runtimeConfigCache.routePriorities.lora = interfacePriority["lora"] | ROUTE_PRIORITY_LORA;
+				runtimeConfigCache.routePriorities.ham_modem = interfacePriority["ham_modem"] | ROUTE_PRIORITY_HAM_MODEM;
+				runtimeConfigCache.routePriorities.serial_port = interfacePriority["serial_port"] | ROUTE_PRIORITY_SERIAL_PORT;
+				runtimeConfigCache.routePriorities.bluetooth = interfacePriority["bluetooth"] | ROUTE_PRIORITY_BLUETOOTH;
+				runtimeConfigCache.routePriorities.ipfs = interfacePriority["ipfs"] | ROUTE_PRIORITY_IPFS;
+			}
 		}
 	}
 
@@ -110,6 +126,18 @@ const char* getConfiguredAppName() {
 		return runtimeConfigCache.appName;
 #else
 		return RNS_APP_NAME;
+#endif
+}
+
+const RoutePriorityConfig& getConfiguredRoutePriorities() {
+#if JSON_CONFIG_ENABLED
+	if (!runtimeConfigCache.initialized) {
+		populateRuntimeConfigCache();
+	}
+	return runtimeConfigCache.routePriorities;
+#else
+	static const RoutePriorityConfig defaultPriorities;
+	return defaultPriorities;
 #endif
 }
 

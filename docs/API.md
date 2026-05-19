@@ -28,6 +28,7 @@ Endpoints
   - Returns the runtime JSON configuration (from `/config.json` in SPIFFS) or a default template when not present.
   - Auth: required when a token exists.
   - Response: JSON config document.
+  - Routing policy: `routing.interface_priority` can override interface tie-break priorities at runtime without rebuilding firmware.
 
 - `POST /api/v1/config`
   - Accepts a JSON body and writes it to `/config.json` when `JSON_CONFIG_ENABLED=1`.
@@ -117,6 +118,15 @@ API request/response schemas
     "ham_modem": 0,
     "ipfs": 0
   },
+  "route_priority_by_interface": {
+    "serial_port": 15,
+    "esp_now": 40,
+    "wifi_udp": 50,
+    "bluetooth": 10,
+    "lora": 30,
+    "ham_modem": 25,
+    "ipfs": 5
+  },
   "interfaces": {
     "serial_port": {
       "supported": true,
@@ -156,6 +166,7 @@ API request/response schemas
 - `route_count` remains the count of distinct reachable destinations.
 - `route_candidate_count` reports the total number of stored route candidates across all interfaces.
 - `route_candidates_by_interface` breaks candidate-path counts down per interface for fleet diagnostics and failover visibility.
+- `route_priority_by_interface` reports the effective tie-break policy currently used by the router after applying defaults and any runtime overrides from `config.json`.
 - `interfaces.<name>.last_rx_uptime_ms` and `interfaces.<name>.last_tx_uptime_ms` are monotonic milliseconds since boot, not wall-clock timestamps.
 - `interfaces.<name>.supported` indicates whether the interface is compiled into the current firmware image.
 - `interfaces.<name>.usable` indicates whether the interface is presently available for routing or transmit activity.
@@ -167,6 +178,12 @@ API request/response schemas
   "node_name": "",
   "rns_app_name": "esp32.node",
   "wifi": {"ssid":"","password":""},
+  "routing": {
+    "interface_priority": {
+      "wifi_udp": 50,
+      "esp_now": 40
+    }
+  },
   "api": {"token":"","public_key":""}
 }
 ```

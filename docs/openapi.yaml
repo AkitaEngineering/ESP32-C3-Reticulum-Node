@@ -50,6 +50,10 @@ paths:
                     type: object
                     additionalProperties:
                       type: integer
+                  route_priority_by_interface:
+                    type: object
+                    additionalProperties:
+                      type: integer
                   interfaces:
                     type: object
                     additionalProperties:
