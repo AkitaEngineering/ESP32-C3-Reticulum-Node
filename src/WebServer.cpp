@@ -138,6 +138,72 @@ static void appendInterfaceHealth(JsonObject interfaces, InterfaceManager &inter
     appendInterfaceHealthObject(interfaces, "ipfs", interfaceManager.getInterfaceHealthSnapshot(InterfaceType::IPFS));
 }
 
+static String bytesToHexString(const uint8_t* data, size_t len) {
+    static const char* hex = "0123456789ABCDEF";
+    String out;
+    out.reserve(len * 2);
+    for (size_t i = 0; i < len; ++i) {
+        out += hex[(data[i] >> 4) & 0x0F];
+        out += hex[data[i] & 0x0F];
+    }
+    return out;
+}
+
+static const char* interfaceTypeName(InterfaceType interface) {
+    switch (interface) {
+        case InterfaceType::SERIAL_PORT: return "serial_port";
+        case InterfaceType::ESP_NOW: return "esp_now";
+        case InterfaceType::WIFI_UDP: return "wifi_udp";
+        case InterfaceType::BLUETOOTH: return "bluetooth";
+        case InterfaceType::LORA: return "lora";
+        case InterfaceType::HAM_MODEM: return "ham_modem";
+        case InterfaceType::IPFS: return "ipfs";
+        case InterfaceType::LOCAL: return "local";
+        default: return "unknown";
+    }
+}
+
+static void appendRouteDiagnosticCandidate(JsonArray candidates, const RouteDiagnosticCandidate& candidate) {
+    JsonObject candidateDoc = candidates.createNestedObject();
+    candidateDoc["interface"] = interfaceTypeName(candidate.interface);
+    candidateDoc["selected"] = candidate.selected;
+    candidateDoc["usable"] = candidate.usable;
+    candidateDoc["hops"] = candidate.hops;
+    candidateDoc["interface_priority"] = candidate.interface_priority;
+    candidateDoc["age_ms"] = candidate.age_ms;
+    candidateDoc["last_heard_uptime_ms"] = candidate.last_heard_uptime_ms;
+    candidateDoc["next_hop_mac"] = bytesToHexString(candidate.next_hop_mac.data(), candidate.next_hop_mac.size());
+    candidateDoc["next_hop_ip"] = candidate.next_hop_ip ? candidate.next_hop_ip.toString() : String("");
+    candidateDoc["next_hop_port"] = candidate.next_hop_port;
+}
+
+static void appendRouteDiagnostics(JsonArray destinations, const std::vector<RouteDiagnosticGroup>& routeDiagnostics) {
+    for (const auto& group : routeDiagnostics) {
+        JsonObject destinationDoc = destinations.createNestedObject();
+        destinationDoc["destination"] = bytesToHexString(group.destination_addr.data(), group.destination_addr.size());
+        destinationDoc["candidate_count"] = static_cast<int>(group.candidates.size());
+
+        const RouteDiagnosticCandidate* selectedCandidate = nullptr;
+        for (const auto& candidate : group.candidates) {
+            if (candidate.selected) {
+                selectedCandidate = &candidate;
+                break;
+            }
+        }
+
+        destinationDoc["selected_interface"] = selectedCandidate ? interfaceTypeName(selectedCandidate->interface) : "";
+        if (selectedCandidate) {
+            destinationDoc["selected_hops"] = selectedCandidate->hops;
+            destinationDoc["selected_priority"] = selectedCandidate->interface_priority;
+        }
+
+        JsonArray candidates = destinationDoc.createNestedArray("candidates");
+        for (const auto& candidate : group.candidates) {
+            appendRouteDiagnosticCandidate(candidates, candidate);
+        }
+    }
+}
+
 static bool checkAuth(const String &authHeader) {
 #if WEBSERVER_AUTH_ENABLED
     String expected;
@@ -268,6 +334,27 @@ void processHttpClient(WiFiClient &client) {
         if (restartRequired) {
             doc["restart_reason"] = restartReason;
         }
+        String out; serializeJson(doc, out);
+        sendResponse(client, 200, "application/json", out);
+
+    } else if (method == "GET" && path == "/api/v1/routes") {
+        if (!checkAuth(authHeader)) { sendUnauthorized(client); return; }
+        reloadRuntimeConfigCache();
+        RoutingTable &routingTable = reticulumNode.getRoutingTable();
+        InterfaceManager &interfaceManager = reticulumNode.getInterfaceManager();
+        std::vector<RouteDiagnosticGroup> routeDiagnostics = routingTable.getRouteDiagnostics(
+            [&interfaceManager](InterfaceType ifType) {
+                return interfaceManager.getInterfaceHealthSnapshot(ifType).usable;
+            }
+        );
+
+        DynamicJsonDocument doc(16384);
+        doc["route_count"] = static_cast<int>(routingTable.getRouteCount());
+        doc["route_candidate_count"] = static_cast<int>(routingTable.getRouteCandidateCount());
+        JsonObject routePriorities = doc.createNestedObject("route_priority_by_interface");
+        appendRoutePriorityConfig(routePriorities);
+        JsonArray destinations = doc.createNestedArray("destinations");
+        appendRouteDiagnostics(destinations, routeDiagnostics);
         String out; serializeJson(doc, out);
         sendResponse(client, 200, "application/json", out);
 

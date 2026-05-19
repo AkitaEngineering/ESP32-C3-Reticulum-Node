@@ -50,6 +50,8 @@ Revisions are listed in reverse chronological order (most recent first).
   routing table now stores multiple candidates per destination.
 - Added `route_candidate_count` and `route_candidates_by_interface` to status and
   metrics reporting so fleet tooling can observe failover-ready paths explicitly.
+- Added `GET /api/v1/routes` to expose grouped per-destination route diagnostics,
+  including candidate paths, the selected path, hop count, age, and next-hop data.
 
 #### Interface Health Telemetry
 - Added per-interface health snapshots to the status and metrics APIs.
@@ -68,7 +70,8 @@ Revisions are listed in reverse chronological order (most recent first).
 
 #### API Contract Updates
 - Updated `docs/API.md` and `docs/openapi.yaml` to document the expanded status
-  schema, interface health payloads, and restart-required config write signaling.
+  schema, route diagnostics payloads, interface health payloads, and restart-required
+  config write signaling.
 
 ### 2.2 — KISS-over-USB, ESP-NOW Mesh Confirmed, Repo Cleanup (2026-03-04)
 

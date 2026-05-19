@@ -26,6 +26,24 @@ struct RouteEntry {
     uint8_t hops = 0;
 };
 
+struct RouteDiagnosticCandidate {
+    std::array<uint8_t, 6> next_hop_mac = {0};
+    IPAddress next_hop_ip;
+    uint16_t next_hop_port = 0;
+    unsigned long last_heard_uptime_ms = 0;
+    unsigned long age_ms = 0;
+    InterfaceType interface = InterfaceType::UNKNOWN;
+    uint8_t hops = 0;
+    int interface_priority = 0;
+    bool usable = false;
+    bool selected = false;
+};
+
+struct RouteDiagnosticGroup {
+    std::array<uint8_t, RNS_ADDRESS_SIZE> destination_addr = {0};
+    std::vector<RouteDiagnosticCandidate> candidates;
+};
+
 // Structure to store recent announce IDs (announce hash + source addr prefix)
 // Used as key in std::map for loop prevention
 struct RecentAnnounceKey {
@@ -67,6 +85,7 @@ public:
     size_t getRouteCandidateCount() const;
     // Return total number of candidate route entries stored for an interface.
     size_t getRouteCandidateCountForInterface(InterfaceType interface) const;
+    std::vector<RouteDiagnosticGroup> getRouteDiagnostics(const std::function<bool(InterfaceType)> &isInterfaceUsable = nullptr) const;
 
     // Announce forwarding prevention
     bool shouldForwardAnnounce(uint32_t packet_id, const uint8_t* source_addr);

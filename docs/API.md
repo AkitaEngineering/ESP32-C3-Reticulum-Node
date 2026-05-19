@@ -24,6 +24,10 @@ Endpoints
   - Returns JSON with node status metrics, provisioning state, and per-interface health snapshots (uptime, free heap, link counts, route count, stable device ID, config presence, bootstrap mode, WiFi state, restart-required state, interface support/usability, packet counters, and last RX/TX uptime timestamps).
   - Auth: optional depending on `WEBSERVER_AUTH_ENABLED`.
 
+- `GET /api/v1/routes`
+  - Returns grouped route diagnostics by destination, including all candidate paths, the currently selected path, and the effective interface-priority policy used for tie-breaks.
+  - Auth: optional depending on `WEBSERVER_AUTH_ENABLED`.
+
 - `GET /api/v1/config`
   - Returns the runtime JSON configuration (from `/config.json` in SPIFFS) or a default template when not present.
   - Auth: required when a token exists.
@@ -170,6 +174,57 @@ API request/response schemas
 - `interfaces.<name>.last_rx_uptime_ms` and `interfaces.<name>.last_tx_uptime_ms` are monotonic milliseconds since boot, not wall-clock timestamps.
 - `interfaces.<name>.supported` indicates whether the interface is compiled into the current firmware image.
 - `interfaces.<name>.usable` indicates whether the interface is presently available for routing or transmit activity.
+
+- `GET /api/v1/routes` response (example abridged):
+
+```json
+{
+  "route_count": 2,
+  "route_candidate_count": 3,
+  "route_priority_by_interface": {
+    "wifi_udp": 50,
+    "esp_now": 40,
+    "lora": 30
+  },
+  "destinations": [
+    {
+      "destination": "A1B2C3D4E5F60708",
+      "candidate_count": 2,
+      "selected_interface": "wifi_udp",
+      "selected_hops": 2,
+      "selected_priority": 50,
+      "candidates": [
+        {
+          "interface": "wifi_udp",
+          "selected": true,
+          "usable": true,
+          "hops": 2,
+          "interface_priority": 50,
+          "age_ms": 1400,
+          "last_heard_uptime_ms": 42100,
+          "next_hop_mac": "000000000000",
+          "next_hop_ip": "192.168.1.20",
+          "next_hop_port": 4242
+        },
+        {
+          "interface": "esp_now",
+          "selected": false,
+          "usable": true,
+          "hops": 2,
+          "interface_priority": 40,
+          "age_ms": 900,
+          "last_heard_uptime_ms": 42600,
+          "next_hop_mac": "AABBCCDDEEFF",
+          "next_hop_ip": "",
+          "next_hop_port": 0
+        }
+      ]
+    }
+  ]
+}
+```
+
+- `GET /api/v1/routes` is the diagnostics view for route choice. If no candidate for a destination is currently usable, `selected_interface` will be empty and all candidates for that destination will have `selected: false`.
 
 - `GET /api/v1/config` response (example minimal):
 

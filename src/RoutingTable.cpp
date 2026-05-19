@@ -263,6 +263,69 @@ size_t RoutingTable::getRouteCandidateCountForInterface(InterfaceType interface)
     return count;
 }
 
+std::vector<RouteDiagnosticGroup> RoutingTable::getRouteDiagnostics(const std::function<bool(InterfaceType)> &isInterfaceUsable) const {
+    std::vector<RouteDiagnosticGroup> groups;
+    groups.reserve(_routes.size());
+
+    const unsigned long now = millis();
+    for (const auto& entry : _routes) {
+        RouteDiagnosticGroup* group = nullptr;
+        for (auto& candidateGroup : groups) {
+            if (memcmp(candidateGroup.destination_addr.data(), entry.destination_addr, RNS_ADDRESS_SIZE) == 0) {
+                group = &candidateGroup;
+                break;
+            }
+        }
+
+        if (!group) {
+            RouteDiagnosticGroup newGroup;
+            memcpy(newGroup.destination_addr.data(), entry.destination_addr, RNS_ADDRESS_SIZE);
+            groups.push_back(std::move(newGroup));
+            group = &groups.back();
+        }
+
+        RouteDiagnosticCandidate candidate;
+        memcpy(candidate.next_hop_mac.data(), entry.next_hop_mac, sizeof(entry.next_hop_mac));
+        candidate.next_hop_ip = entry.next_hop_ip;
+        candidate.next_hop_port = entry.next_hop_port;
+        candidate.last_heard_uptime_ms = entry.last_heard_time;
+        candidate.age_ms = now - entry.last_heard_time;
+        candidate.interface = entry.interface;
+        candidate.hops = entry.hops;
+        candidate.interface_priority = routePriority(entry.interface);
+        candidate.usable = !isInterfaceUsable || isInterfaceUsable(entry.interface);
+        group->candidates.push_back(candidate);
+    }
+
+    auto isBetterDiagnosticCandidate = [](const RouteDiagnosticCandidate& candidate, const RouteDiagnosticCandidate& currentBest) {
+        if (candidate.hops != currentBest.hops) {
+            return candidate.hops < currentBest.hops;
+        }
+        if (candidate.interface_priority != currentBest.interface_priority) {
+            return candidate.interface_priority > currentBest.interface_priority;
+        }
+        return candidate.last_heard_uptime_ms > currentBest.last_heard_uptime_ms;
+    };
+
+    for (auto& group : groups) {
+        RouteDiagnosticCandidate* selectedCandidate = nullptr;
+        for (auto& candidate : group.candidates) {
+            if (!candidate.usable) {
+                continue;
+            }
+            if (!selectedCandidate || isBetterDiagnosticCandidate(candidate, *selectedCandidate)) {
+                selectedCandidate = &candidate;
+            }
+        }
+
+        if (selectedCandidate) {
+            selectedCandidate->selected = true;
+        }
+    }
+
+    return groups;
+}
+
 // --- Announce Forwarding Prevention ---
 bool RoutingTable::shouldForwardAnnounce(uint32_t packet_id, const uint8_t* source_addr) {
     if (!source_addr) return false;

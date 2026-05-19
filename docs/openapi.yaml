@@ -80,6 +80,66 @@ paths:
                   restart_reason:
                     type: string
 
+  /api/v1/routes:
+    get:
+      summary: Route diagnostics
+      responses:
+        '200':
+          description: Grouped route diagnostics JSON
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  route_count:
+                    type: integer
+                  route_candidate_count:
+                    type: integer
+                  route_priority_by_interface:
+                    type: object
+                    additionalProperties:
+                      type: integer
+                  destinations:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        destination:
+                          type: string
+                        candidate_count:
+                          type: integer
+                        selected_interface:
+                          type: string
+                        selected_hops:
+                          type: integer
+                        selected_priority:
+                          type: integer
+                        candidates:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              interface:
+                                type: string
+                              selected:
+                                type: boolean
+                              usable:
+                                type: boolean
+                              hops:
+                                type: integer
+                              interface_priority:
+                                type: integer
+                              age_ms:
+                                type: integer
+                              last_heard_uptime_ms:
+                                type: integer
+                              next_hop_mac:
+                                type: string
+                              next_hop_ip:
+                                type: string
+                              next_hop_port:
+                                type: integer
+
   /api/v1/config:
     get:
       summary: Read runtime JSON config

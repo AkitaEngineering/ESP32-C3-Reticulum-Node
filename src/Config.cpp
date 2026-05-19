@@ -51,7 +51,7 @@ void populateRuntimeConfigCache() {
 	snprintf(runtimeConfigCache.appName, sizeof(runtimeConfigCache.appName), "%s", RNS_APP_NAME);
 	runtimeConfigCache.routePriorities = RoutePriorityConfig{};
 
-	DynamicJsonDocument doc(1024);
+	DynamicJsonDocument doc(2048);
 	if (loadRuntimeConfigDocument(doc)) {
 		const char* nodeName = doc["node_name"] | "";
 		if (nodeName && nodeName[0] != '\0') {
