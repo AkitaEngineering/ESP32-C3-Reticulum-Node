@@ -44,6 +44,17 @@ class ReticulumNode;
 //                      const uint8_t* sender_mac, const IPAddress& sender_ip, uint16_t sender_port)
 using PacketReceiverCallback = std::function<void(const uint8_t*, size_t, InterfaceType, const uint8_t*, const IPAddress&, uint16_t)>;
 
+struct InterfaceHealthSnapshot {
+    bool supported = false;
+    bool usable = false;
+    unsigned long last_rx_uptime_ms = 0;
+    unsigned long last_tx_uptime_ms = 0;
+    uint32_t rx_packets = 0;
+    uint32_t tx_packets = 0;
+    uint32_t rx_bytes = 0;
+    uint32_t tx_bytes = 0;
+};
+
 class InterfaceManager {
 public:
     InterfaceManager(PacketReceiverCallback receiver, RoutingTable& routingTable);
@@ -97,6 +108,7 @@ public:
 
     // Debug helpers
     void printEspNowPeers();
+    InterfaceHealthSnapshot getInterfaceHealthSnapshot(InterfaceType ifType) const;
 
     // Static callbacks needed for C-style APIs like ESP-NOW
 #if defined(ESP_IDF_VERSION_MAJOR) && (ESP_IDF_VERSION_MAJOR >= 5)
@@ -113,6 +125,20 @@ public:
     void sendEspNowDiagKiss();
 
 private:
+    struct InterfaceCounters {
+        unsigned long lastRxMs = 0;
+        unsigned long lastTxMs = 0;
+        uint32_t rxPackets = 0;
+        uint32_t txPackets = 0;
+        uint32_t rxBytes = 0;
+        uint32_t txBytes = 0;
+    };
+
+    static constexpr size_t INTERFACE_STATS_COUNT = static_cast<size_t>(InterfaceType::IPFS) + 1;
+    static constexpr size_t interfaceStatsIndex(InterfaceType ifType) {
+        return static_cast<size_t>(ifType);
+    }
+
     struct EspNowRxAssembly {
         bool active = false;
         std::array<uint8_t, 6> senderMac = {0};
@@ -173,6 +199,10 @@ private:
     void processEspNowStoreForward();
     bool enqueueEspNowPacket(const uint8_t *packetBuffer, size_t packetLen, const uint8_t *destinationAddr);
     bool sendPacketViaEspNowInternal(const uint8_t *packetBuffer, size_t packetLen, const uint8_t *destinationAddr, bool enqueueOnFailure);
+    void recordInterfaceRx(InterfaceType ifType, size_t bytes);
+    void recordInterfaceTx(InterfaceType ifType, size_t bytes);
+    bool isInterfaceSupported(InterfaceType ifType) const;
+    bool isInterfaceUsableForRouting(InterfaceType ifType) const;
 #if defined(KISS_OVER_USB)
     void flushPendingUsbKissFrames();
 #endif
@@ -199,6 +229,7 @@ private:
 
     // Keep a mirror of ESP-NOW peers added so we can display/remove them
     std::vector<std::array<uint8_t,6>> _espNowPeers;
+    std::array<InterfaceCounters, INTERFACE_STATS_COUNT> _interfaceStats = {};
     std::vector<EspNowRxAssembly> _espNowRxAssemblies;
     std::deque<EspNowQueuedPacket> _espNowStoreQueue;
     uint16_t _espNowTxMessageId = 0;

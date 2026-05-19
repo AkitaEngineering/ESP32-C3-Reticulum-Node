@@ -12,6 +12,56 @@ Revisions are listed in reverse chronological order (most recent first).
 
 ---
 
+### 2.3 — Provisioning Status and Commercialization Strategy (2026-05-18)
+
+#### Productization Documentation
+- Added `docs/COMMERCIALIZATION_STRATEGY.md` to define the product thesis, beachhead market,
+  monetization model, and engineering priorities required for commercialization.
+- Updated `docs/INDEX.md` to include commercialization strategy documentation.
+
+#### Provisioning and Fleet API
+- Added provisioning-oriented fields to `GET /api/v1/status`, including:
+  - Stable `device_id`
+  - `config_present`
+  - `bootstrap_mode`
+  - WiFi connection state and IP address
+  - `restart_required` and `restart_reason`
+- Added `X-Restart-Required` and `X-Restart-Reason` response headers to
+  `POST /api/v1/config` so provisioning tooling can distinguish live-applied
+  changes from saved-but-restart-required changes.
+
+#### Runtime Config Handling
+- Reworked runtime JSON config name loading to use a refreshable cache instead of
+  one-time static initialization.
+- Added explicit runtime config cache reload after config writes so API responses
+  and status reporting reflect the saved configuration immediately.
+
+#### Routing Policy
+- Routing table now preserves multiple candidate paths per destination instead of
+  replacing them with whichever announce arrived most recently.
+- Route selection is now deterministic: lower hop count wins first, then interface
+  priority, then freshest route.
+- When the incoming interface is excluded during forwarding, the sender now selects
+  the next-best usable route instead of dropping to whichever single route entry
+  happened to be stored last.
+
+#### Route Observability
+- Preserved `route_count` as the count of distinct destinations even though the
+  routing table now stores multiple candidates per destination.
+- Added `route_candidate_count` and `route_candidates_by_interface` to status and
+  metrics reporting so fleet tooling can observe failover-ready paths explicitly.
+
+#### Interface Health Telemetry
+- Added per-interface health snapshots to the status and metrics APIs.
+- Each interface now reports support state, current usability, last RX/TX uptime
+  timestamps, packet counters, and byte counters.
+- Added interface activity accounting in the real ingress/egress paths for serial,
+  ESP-NOW, WiFi UDP, LoRa, HAM modem, Bluetooth, and IPFS.
+
+#### API Contract Updates
+- Updated `docs/API.md` and `docs/openapi.yaml` to document the expanded status
+  schema, interface health payloads, and restart-required config write signaling.
+
 ### 2.2 — KISS-over-USB, ESP-NOW Mesh Confirmed, Repo Cleanup (2026-03-04)
 
 #### KISS-over-USB TNC Fix

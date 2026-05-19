@@ -26,7 +26,7 @@ extern ReticulumNode reticulumNode;
 static WiFiServer _server(WEBSERVER_PORT);
 static const char* CONFIG_PATH = "/config.json";
 
-static void sendResponse(WiFiClient &client, int code, const char *contentType, const String &body) {
+static void sendResponse(WiFiClient &client, int code, const char *contentType, const String &body, const String &extraHeaders = String()) {
     const char *statusText = "OK";
     switch (code) {
         case 200: statusText = "OK"; break;
@@ -44,6 +44,9 @@ static void sendResponse(WiFiClient &client, int code, const char *contentType, 
     client.print(" "); client.print(statusText); client.print("\r\n");
     client.print("Content-Type: "); client.print(contentType); client.print("\r\n");
     client.print("Content-Length: "); client.print(body.length()); client.print("\r\n");
+    if (extraHeaders.length() > 0) {
+        client.print(extraHeaders);
+    }
     client.print("Connection: close\r\n\r\n");
     client.print(body);
 }
@@ -73,6 +76,56 @@ static String getSavedApiToken() {
     return api["token"].as<String>();
 }
 #endif
+
+static bool isBootstrapMode() {
+#if WEBSERVER_AUTH_ENABLED
+    return getSavedApiToken().length() == 0;
+#else
+    return false;
+#endif
+}
+
+static bool getRestartRequiredReason(String &reason) {
+    if (strcmp(reticulumNode.getRuntimeAppName(), getConfiguredAppName()) != 0) {
+        reason = "rns_app_name_changed";
+        return true;
+    }
+
+    reason = "";
+    return false;
+}
+
+static void appendRouteCandidateCounts(JsonObject routeCounts, RoutingTable &routingTable) {
+    routeCounts["serial_port"] = (int)routingTable.getRouteCandidateCountForInterface(InterfaceType::SERIAL_PORT);
+    routeCounts["esp_now"] = (int)routingTable.getRouteCandidateCountForInterface(InterfaceType::ESP_NOW);
+    routeCounts["wifi_udp"] = (int)routingTable.getRouteCandidateCountForInterface(InterfaceType::WIFI_UDP);
+    routeCounts["bluetooth"] = (int)routingTable.getRouteCandidateCountForInterface(InterfaceType::BLUETOOTH);
+    routeCounts["lora"] = (int)routingTable.getRouteCandidateCountForInterface(InterfaceType::LORA);
+    routeCounts["ham_modem"] = (int)routingTable.getRouteCandidateCountForInterface(InterfaceType::HAM_MODEM);
+    routeCounts["ipfs"] = (int)routingTable.getRouteCandidateCountForInterface(InterfaceType::IPFS);
+}
+
+static void appendInterfaceHealthObject(JsonObject interfaces, const char* name, const InterfaceHealthSnapshot &snapshot) {
+    JsonObject interfaceDoc = interfaces.createNestedObject(name);
+    interfaceDoc["supported"] = snapshot.supported;
+    interfaceDoc["usable"] = snapshot.usable;
+    interfaceDoc["last_rx_uptime_ms"] = snapshot.last_rx_uptime_ms;
+    interfaceDoc["last_tx_uptime_ms"] = snapshot.last_tx_uptime_ms;
+    interfaceDoc["rx_packets"] = snapshot.rx_packets;
+    interfaceDoc["tx_packets"] = snapshot.tx_packets;
+    interfaceDoc["rx_bytes"] = snapshot.rx_bytes;
+    interfaceDoc["tx_bytes"] = snapshot.tx_bytes;
+}
+
+static void appendInterfaceHealth(JsonObject interfaces, InterfaceManager &interfaceManager) {
+    appendInterfaceHealthObject(interfaces, "serial_port", interfaceManager.getInterfaceHealthSnapshot(InterfaceType::SERIAL_PORT));
+    appendInterfaceHealthObject(interfaces, "esp_now", interfaceManager.getInterfaceHealthSnapshot(InterfaceType::ESP_NOW));
+    appendInterfaceHealthObject(interfaces, "wifi_udp", interfaceManager.getInterfaceHealthSnapshot(InterfaceType::WIFI_UDP));
+    appendInterfaceHealthObject(interfaces, "bluetooth", interfaceManager.getInterfaceHealthSnapshot(InterfaceType::BLUETOOTH));
+    appendInterfaceHealthObject(interfaces, "lora", interfaceManager.getInterfaceHealthSnapshot(InterfaceType::LORA));
+    appendInterfaceHealthObject(interfaces, "ham_modem", interfaceManager.getInterfaceHealthSnapshot(InterfaceType::HAM_MODEM));
+    appendInterfaceHealthObject(interfaces, "ipfs", interfaceManager.getInterfaceHealthSnapshot(InterfaceType::IPFS));
+}
 
 static bool checkAuth(const String &authHeader) {
 #if WEBSERVER_AUTH_ENABLED
@@ -174,13 +227,34 @@ void processHttpClient(WiFiClient &client) {
     // Route handling
     if (method == "GET" && path == "/api/v1/status") {
         if (!checkAuth(authHeader)) { sendUnauthorized(client); return; }
-        DynamicJsonDocument doc(512);
+        reloadRuntimeConfigCache();
+        DynamicJsonDocument doc(3072);
+        String restartReason;
+        bool restartRequired = getRestartRequiredReason(restartReason);
+        RoutingTable &routingTable = reticulumNode.getRoutingTable();
+        InterfaceManager &interfaceManager = reticulumNode.getInterfaceManager();
+
+        bool wifiConnected = WiFi.status() == WL_CONNECTED;
         doc["node_name"] = getConfiguredNodeName();
+        doc["device_id"] = getDefaultDeviceName();
         doc["rns_app_name"] = getConfiguredAppName();
         doc["uptime_s"] = millis() / 1000;
         doc["free_heap"] = ESP.getFreeHeap();
         doc["active_links"] = (int)reticulumNode.getLinkManager().getActiveLinkCount();
-        doc["route_count"] = (int)reticulumNode.getRoutingTable().getRouteCount();
+        doc["route_count"] = (int)routingTable.getRouteCount();
+        doc["route_candidate_count"] = (int)routingTable.getRouteCandidateCount();
+        doc["config_present"] = hasRuntimeConfigFile();
+        doc["bootstrap_mode"] = isBootstrapMode();
+        doc["wifi_connected"] = wifiConnected;
+        doc["wifi_ip"] = wifiConnected ? WiFi.localIP().toString() : String("");
+        JsonObject routeCounts = doc.createNestedObject("route_candidates_by_interface");
+        appendRouteCandidateCounts(routeCounts, routingTable);
+        JsonObject interfaces = doc.createNestedObject("interfaces");
+        appendInterfaceHealth(interfaces, interfaceManager);
+        doc["restart_required"] = restartRequired;
+        if (restartRequired) {
+            doc["restart_reason"] = restartReason;
+        }
         String out; serializeJson(doc, out);
         sendResponse(client, 200, "application/json", out);
 
@@ -231,8 +305,17 @@ void processHttpClient(WiFiClient &client) {
                 if (ssid.length() > 0) { DebugSerial.println("WebServer: applying WiFi credentials from config.json"); WiFi.begin(ssid.c_str(), pass.c_str()); }
             }
         }
+        reloadRuntimeConfigCache();
+        String restartReason;
+        bool restartRequired = getRestartRequiredReason(restartReason);
+        String extraHeaders = String("X-Restart-Required: ") + (restartRequired ? "true" : "false") + "\r\n";
+        if (restartRequired) {
+            extraHeaders += "X-Restart-Reason: ";
+            extraHeaders += restartReason;
+            extraHeaders += "\r\n";
+        }
         String out; serializeJson(doc, out);
-        sendResponse(client, 200, "application/json", out);
+        sendResponse(client, 200, "application/json", out, extraHeaders);
 
     } else if (method == "POST" && path == "/api/v1/config/save") {
         if (!checkAuth(authHeader)) { sendUnauthorized(client); return; }
@@ -358,9 +441,16 @@ void processHttpClient(WiFiClient &client) {
     } else if (method == "GET" && path == "/api/v1/metrics") {
         if (!checkAuth(authHeader)) { sendUnauthorized(client); return; }
 #if METRICS_ENABLED
-        DynamicJsonDocument doc(512);
+        DynamicJsonDocument doc(3072);
+        RoutingTable &routingTable = reticulumNode.getRoutingTable();
+        InterfaceManager &interfaceManager = reticulumNode.getInterfaceManager();
         doc["heap_free"] = ESP.getFreeHeap();
         doc["uptime_s"] = millis() / 1000;
+        doc["active_links"] = (int)reticulumNode.getLinkManager().getActiveLinkCount();
+        doc["route_count"] = (int)routingTable.getRouteCount();
+        doc["route_candidate_count"] = (int)routingTable.getRouteCandidateCount();
+        JsonObject interfaces = doc.createNestedObject("interfaces");
+        appendInterfaceHealth(interfaces, interfaceManager);
         String out; serializeJson(doc, out);
         sendResponse(client, 200, "application/json", out);
 #else

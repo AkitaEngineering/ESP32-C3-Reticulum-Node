@@ -21,7 +21,7 @@ Common response codes
 Endpoints
 
 - `GET /api/v1/status`
-  - Returns JSON with node status metrics (uptime, free heap, link counts, route count).
+  - Returns JSON with node status metrics, provisioning state, and per-interface health snapshots (uptime, free heap, link counts, route count, stable device ID, config presence, bootstrap mode, WiFi state, restart-required state, interface support/usability, packet counters, and last RX/TX uptime timestamps).
   - Auth: optional depending on `WEBSERVER_AUTH_ENABLED`.
 
 - `GET /api/v1/config`
@@ -32,6 +32,9 @@ Endpoints
 - `POST /api/v1/config`
   - Accepts a JSON body and writes it to `/config.json` when `JSON_CONFIG_ENABLED=1`.
   - If `wifi` credentials are present in the JSON they will be applied immediately (`WiFi.begin(...)`).
+  - Response headers:
+    - `X-Restart-Required: true|false` — indicates whether the saved configuration includes changes that require a reboot to take full effect.
+    - `X-Restart-Reason: <reason>` — currently returned when `rns_app_name` changed and the running node still uses the previous application name.
   - Auth: required when a token exists.
   - Returns the saved JSON on success.
 
@@ -94,13 +97,68 @@ API request/response schemas
 ```json
 {
   "node_name": "rns-6497AC",
+  "device_id": "rns-6497AC",
   "rns_app_name": "esp32.node",
   "uptime_s": 123,
   "free_heap": 34567,
   "active_links": 2,
-  "route_count": 12
+  "route_count": 12,
+  "route_candidate_count": 16,
+  "config_present": true,
+  "bootstrap_mode": false,
+  "wifi_connected": true,
+  "wifi_ip": "192.168.1.42",
+  "route_candidates_by_interface": {
+    "serial_port": 0,
+    "esp_now": 8,
+    "wifi_udp": 6,
+    "bluetooth": 0,
+    "lora": 2,
+    "ham_modem": 0,
+    "ipfs": 0
+  },
+  "interfaces": {
+    "serial_port": {
+      "supported": true,
+      "usable": true,
+      "last_rx_uptime_ms": 8112,
+      "last_tx_uptime_ms": 8120,
+      "rx_packets": 14,
+      "tx_packets": 21,
+      "rx_bytes": 1710,
+      "tx_bytes": 2483
+    },
+    "esp_now": {
+      "supported": true,
+      "usable": true,
+      "last_rx_uptime_ms": 7901,
+      "last_tx_uptime_ms": 8044,
+      "rx_packets": 9,
+      "tx_packets": 11,
+      "rx_bytes": 1092,
+      "tx_bytes": 1340
+    },
+    "wifi_udp": {
+      "supported": true,
+      "usable": false,
+      "last_rx_uptime_ms": 0,
+      "last_tx_uptime_ms": 0,
+      "rx_packets": 0,
+      "tx_packets": 0,
+      "rx_bytes": 0,
+      "tx_bytes": 0
+    }
+  },
+  "restart_required": false
 }
 ```
+
+- `route_count` remains the count of distinct reachable destinations.
+- `route_candidate_count` reports the total number of stored route candidates across all interfaces.
+- `route_candidates_by_interface` breaks candidate-path counts down per interface for fleet diagnostics and failover visibility.
+- `interfaces.<name>.last_rx_uptime_ms` and `interfaces.<name>.last_tx_uptime_ms` are monotonic milliseconds since boot, not wall-clock timestamps.
+- `interfaces.<name>.supported` indicates whether the interface is compiled into the current firmware image.
+- `interfaces.<name>.usable` indicates whether the interface is presently available for routing or transmit activity.
 
 - `GET /api/v1/config` response (example minimal):
 
@@ -114,8 +172,11 @@ API request/response schemas
 ```
 
 - `POST /api/v1/config` request: any valid JSON object matching your runtime config. Response is the saved JSON document on success.
+- `POST /api/v1/config` also returns `X-Restart-Required` and, when applicable, `X-Restart-Reason` so provisioning tools can prompt for a controlled restart instead of assuming every saved change applied live.
 
 - `POST /api/v1/ota` request: binary body, header `X-Signature-Ed25519` required with hex signature. Responses: `200` (ok), `400` (bad upload), `403` (invalid signature).
+
+- `GET /api/v1/metrics` returns a compact JSON metrics payload including heap, uptime, link counts, route counts, and the same `interfaces` health snapshot object used by `/api/v1/status` when `METRICS_ENABLED=1`.
 
 Examples
 - Provisioning

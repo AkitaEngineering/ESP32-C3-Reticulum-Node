@@ -80,6 +80,89 @@ InterfaceManager::InterfaceManager(PacketReceiverCallback receiver, RoutingTable
     _instance = this; // Set the static instance pointer
 }
 
+void InterfaceManager::recordInterfaceRx(InterfaceType ifType, size_t bytes) {
+    const size_t index = interfaceStatsIndex(ifType);
+    if (index >= _interfaceStats.size()) {
+        return;
+    }
+
+    InterfaceCounters &stats = _interfaceStats[index];
+    stats.lastRxMs = millis();
+    stats.rxPackets++;
+    stats.rxBytes += static_cast<uint32_t>(bytes);
+}
+
+void InterfaceManager::recordInterfaceTx(InterfaceType ifType, size_t bytes) {
+    const size_t index = interfaceStatsIndex(ifType);
+    if (index >= _interfaceStats.size()) {
+        return;
+    }
+
+    InterfaceCounters &stats = _interfaceStats[index];
+    stats.lastTxMs = millis();
+    stats.txPackets++;
+    stats.txBytes += static_cast<uint32_t>(bytes);
+}
+
+bool InterfaceManager::isInterfaceSupported(InterfaceType ifType) const {
+    switch (ifType) {
+        case InterfaceType::SERIAL_PORT:
+        case InterfaceType::ESP_NOW:
+        case InterfaceType::WIFI_UDP:
+            return true;
+#if BLUETOOTH_CLASSIC_AVAILABLE
+        case InterfaceType::BLUETOOTH:
+            return true;
+#else
+        case InterfaceType::BLUETOOTH:
+            return false;
+#endif
+#ifdef LORA_ENABLED
+        case InterfaceType::LORA:
+            return true;
+#else
+        case InterfaceType::LORA:
+            return false;
+#endif
+#ifdef HAM_MODEM_ENABLED
+        case InterfaceType::HAM_MODEM:
+            return true;
+#else
+        case InterfaceType::HAM_MODEM:
+            return false;
+#endif
+#ifdef IPFS_ENABLED
+        case InterfaceType::IPFS:
+            return true;
+#else
+        case InterfaceType::IPFS:
+            return false;
+#endif
+        default:
+            return false;
+    }
+}
+
+InterfaceHealthSnapshot InterfaceManager::getInterfaceHealthSnapshot(InterfaceType ifType) const {
+    InterfaceHealthSnapshot snapshot;
+    snapshot.supported = isInterfaceSupported(ifType);
+    snapshot.usable = snapshot.supported && isInterfaceUsableForRouting(ifType);
+
+    const size_t index = interfaceStatsIndex(ifType);
+    if (index >= _interfaceStats.size()) {
+        return snapshot;
+    }
+
+    const InterfaceCounters &stats = _interfaceStats[index];
+    snapshot.last_rx_uptime_ms = stats.lastRxMs;
+    snapshot.last_tx_uptime_ms = stats.lastTxMs;
+    snapshot.rx_packets = stats.rxPackets;
+    snapshot.tx_packets = stats.txPackets;
+    snapshot.rx_bytes = stats.rxBytes;
+    snapshot.tx_bytes = stats.txBytes;
+    return snapshot;
+}
+
 void InterfaceManager::setup() {
     setupSerial(); // Assumes Serial.begin() already called
 
@@ -285,6 +368,7 @@ void InterfaceManager::processWiFiInput() {
 
         int len = _udp.read(udpBuffer.get(), packetSize);
         if (len > 0 && _packetReceiver) {
+            recordInterfaceRx(InterfaceType::WIFI_UDP, static_cast<size_t>(len));
             _packetReceiver(udpBuffer.get(), len, InterfaceType::WIFI_UDP, nullptr, _udp.remoteIP(), _udp.remotePort());
         }
     }
@@ -321,6 +405,7 @@ void InterfaceManager::handleKissPacket(const std::vector<uint8_t>& packetData, 
      DebugSerial.println();
 
      if (_packetReceiver) {
+         recordInterfaceRx(interface, packetData.size());
          // Pass received packet up to ReticulumNode, indicate no specific sender MAC/IP/Port
          _packetReceiver(packetData.data(), packetData.size(), interface, nullptr, IPAddress(), 0);
      }
@@ -332,7 +417,13 @@ void InterfaceManager::sendPacket(const uint8_t *packetBuffer, size_t packetLen,
     if (!packetBuffer || packetLen == 0) return;
 
     // Determine target interface(s) based on routing (or broadcast if unknown)
-    RouteEntry* route = _routingTableRef.findRoute(destinationAddr);
+    RouteEntry* route = _routingTableRef.findRoute(
+        destinationAddr,
+        excludeInterface,
+        [this](InterfaceType ifType) {
+            return this->isInterfaceUsableForRouting(ifType);
+        }
+    );
 
     // Send via specific interface if route found, otherwise broadcast on relevant interfaces
     if (route) {
@@ -427,8 +518,8 @@ bool InterfaceManager::sendPacketViaEspNowInternal(const uint8_t *packetBuffer, 
     (void)destinationAddr;
 #else
     if (destinationAddr != nullptr) { // If destination provided, try to find route
-        RouteEntry* route = _routingTableRef.findRoute(destinationAddr);
-         if (route && route->interface == InterfaceType::ESP_NOW) {
+        RouteEntry* route = _routingTableRef.findRouteForInterface(destinationAddr, InterfaceType::ESP_NOW);
+         if (route) {
              targetMac = route->next_hop_mac;
              // Ensure peer exists - crucial for direct send
              if (!checkEspNowPeer(targetMac)) {
@@ -451,6 +542,7 @@ bool InterfaceManager::sendPacketViaEspNowInternal(const uint8_t *packetBuffer, 
 #endif
             return false;
         }
+        recordInterfaceTx(InterfaceType::ESP_NOW, packetLen);
         return true;
     }
 
@@ -514,6 +606,7 @@ bool InterfaceManager::sendPacketViaEspNowInternal(const uint8_t *packetBuffer, 
         }
     }
 
+    recordInterfaceTx(InterfaceType::ESP_NOW, packetLen);
     return true;
 }
 
@@ -526,8 +619,8 @@ void InterfaceManager::sendPacketViaWiFi(const uint8_t *packetBuffer, size_t pac
     targetIp = broadcastIp; // Default to broadcast
 
      if (destinationAddr != nullptr) { // If destination provided, try to find route
-        RouteEntry* route = _routingTableRef.findRoute(destinationAddr);
-        if (route && route->interface == InterfaceType::WIFI_UDP && route->next_hop_ip) {
+          RouteEntry* route = _routingTableRef.findRouteForInterface(destinationAddr, InterfaceType::WIFI_UDP);
+          if (route && route->next_hop_ip) {
             targetIp = route->next_hop_ip;
             // targetPort = route->next_hop_port; // Use standard port
         } // else: use broadcast IP
@@ -542,6 +635,7 @@ void InterfaceManager::sendPacketViaWiFi(const uint8_t *packetBuffer, size_t pac
     size_t sent = _udp.write(packetBuffer, packetLen);
     if (sent != packetLen) { DebugSerial.print("! WARN: UDP write incomplete (sent "); DebugSerial.print(sent); DebugSerial.print("/"); DebugSerial.print(packetLen); DebugSerial.println(" bytes)"); }
     if (!_udp.endPacket()) { DebugSerial.println("! ERROR: UDP endPacket failed!"); }
+    else { recordInterfaceTx(InterfaceType::WIFI_UDP, packetLen); }
 }
 
 bool InterfaceManager::enqueueEspNowPacket(const uint8_t *packetBuffer, size_t packetLen, const uint8_t *destinationAddr) {
@@ -621,6 +715,7 @@ void InterfaceManager::sendPacketViaSerial(const uint8_t *packetBuffer, size_t p
 #if defined(KISS_OVER_USB)
     size_t written = KissSerial.write(kissEncoded.data(), kissEncoded.size());
     if (written == kissEncoded.size()) {
+        recordInterfaceTx(InterfaceType::SERIAL_PORT, packetLen);
         return;
     }
 
@@ -633,6 +728,7 @@ void InterfaceManager::sendPacketViaSerial(const uint8_t *packetBuffer, size_t p
             _pendingUsbKissFrames.pop_front();
         }
         _pendingUsbKissFrames.push_back(std::move(kissEncoded));
+        recordInterfaceTx(InterfaceType::SERIAL_PORT, packetLen);
         return;
     }
 
@@ -640,9 +736,11 @@ void InterfaceManager::sendPacketViaSerial(const uint8_t *packetBuffer, size_t p
         _pendingUsbKissFrames.pop_front();
     }
     _pendingUsbKissFrames.push_back(std::move(kissEncoded));
+    recordInterfaceTx(InterfaceType::SERIAL_PORT, packetLen);
     return;
 #endif
     (void)KissSerial.write(kissEncoded.data(), kissEncoded.size()); // ignore return value
+    recordInterfaceTx(InterfaceType::SERIAL_PORT, packetLen);
     // if(sent != kissEncoded.size()) { DebugSerial.println("! WARN: Serial write incomplete"); } // Optional check
 }
 
@@ -669,12 +767,48 @@ void InterfaceManager::flushPendingUsbKissFrames() {
 }
 #endif
 
+bool InterfaceManager::isInterfaceUsableForRouting(InterfaceType ifType) const {
+    switch (ifType) {
+        case InterfaceType::ESP_NOW:
+            return _espNowInitialized;
+        case InterfaceType::WIFI_UDP:
+            return WiFi.status() == WL_CONNECTED;
+        case InterfaceType::SERIAL_PORT:
+#if defined(KISS_OVER_USB)
+            return static_cast<bool>(Serial);
+#else
+            return true;
+#endif
+#if BLUETOOTH_CLASSIC_AVAILABLE
+        case InterfaceType::BLUETOOTH:
+            return _serialBT.connected();
+#endif
+#ifdef LORA_ENABLED
+        case InterfaceType::LORA:
+            return _loraInitialized;
+#endif
+#ifdef HAM_MODEM_ENABLED
+        case InterfaceType::HAM_MODEM:
+            return _hamModemInitialized;
+#endif
+#ifdef IPFS_ENABLED
+        case InterfaceType::IPFS:
+            return _ipfsInitialized;
+#endif
+        default:
+            return false;
+    }
+}
+
 #if BLUETOOTH_CLASSIC_AVAILABLE
 void InterfaceManager::sendPacketViaBluetooth(const uint8_t *packetBuffer, size_t packetLen) {
     if (!_serialBT.connected()) return;
     std::vector<uint8_t> kissEncoded;
     KISSProcessor::encode(packetBuffer, packetLen, kissEncoded);
     size_t sent = _serialBT.write(kissEncoded.data(), kissEncoded.size());
+    if (sent > 0) {
+        recordInterfaceTx(InterfaceType::BLUETOOTH, packetLen);
+    }
      // if(sent != kissEncoded.size()) { DebugSerial.println("! WARN: Bluetooth write incomplete"); } // Optional check
 }
 #endif
@@ -870,6 +1004,7 @@ void InterfaceManager::handleEspNowPayload(const uint8_t *senderMac, const uint8
 
     if (!parseEspNowFragment(incomingData, len, messageId, chunkIndex, totalChunks, hasCrc, expectedCrc, chunkData, chunkLen)) {
         if (len <= static_cast<int>(MAX_PACKET_SIZE)) {
+            recordInterfaceRx(InterfaceType::ESP_NOW, static_cast<size_t>(len));
             _packetReceiver(incomingData, static_cast<size_t>(len), InterfaceType::ESP_NOW, senderMac, IPAddress(), 0);
         } else {
             DebugSerial.print("! WARN: Oversized raw ESP-NOW payload (");
@@ -881,6 +1016,7 @@ void InterfaceManager::handleEspNowPayload(const uint8_t *senderMac, const uint8
 
     if (totalChunks == 1) {
         if (chunkLen <= MAX_PACKET_SIZE) {
+            recordInterfaceRx(InterfaceType::ESP_NOW, chunkLen);
             _packetReceiver(chunkData, chunkLen, InterfaceType::ESP_NOW, senderMac, IPAddress(), 0);
         }
         return;
@@ -943,6 +1079,7 @@ void InterfaceManager::handleEspNowPayload(const uint8_t *senderMac, const uint8
             }
         }
 
+        recordInterfaceRx(InterfaceType::ESP_NOW, assembled.size());
         _packetReceiver(assembled.data(), assembled.size(), InterfaceType::ESP_NOW, senderMac, IPAddress(), 0);
         slot->active = false;
         slot->chunks.clear();
@@ -1126,6 +1263,7 @@ void InterfaceManager::processLoRaInput() {
             // Pass received packet to packet receiver callback
             // LoRa doesn't have MAC addresses, so use nullptr
             if (_packetReceiver) {
+                recordInterfaceRx(InterfaceType::LORA, packetSize);
                 _packetReceiver(loraBuffer.get(), packetSize, InterfaceType::LORA, nullptr, IPAddress(), 0);
             }
         } else {
@@ -1147,6 +1285,7 @@ void InterfaceManager::sendPacketViaLoRa(const uint8_t *packetBuffer, size_t pac
     int state = _lora->transmit(packetBuffer, packetLen);
     if (state == RADIOLIB_ERR_NONE) {
         // Success - packet sent
+        recordInterfaceTx(InterfaceType::LORA, packetLen);
         // DebugSerial.println("IF: LoRa packet sent successfully.");
     } else {
         DebugSerial.print("! ERROR: LoRa transmit failed with code: ");
@@ -1237,6 +1376,7 @@ bool InterfaceManager::pollAX25FromAudioModem() {
         // Deliver as if received over HAM modem (AX.25 over KISS)
         if (!frame.empty() && _packetReceiver) {
             // Interpret as raw AX.25 frame; wrap in KISS data frame for consistency
+            recordInterfaceRx(InterfaceType::HAM_MODEM, frame.size());
             _packetReceiver(frame.data(), frame.size(), InterfaceType::HAM_MODEM, nullptr, IPAddress(), 0);
         }
     }
@@ -1277,6 +1417,9 @@ void InterfaceManager::sendPacketViaHAMModem(const uint8_t *packetBuffer, size_t
     size_t sent = HAM_MODEM_SERIAL.write(kissEncoded.data(), kissEncoded.size());
     if (sent != kissEncoded.size()) {
         DebugSerial.println("! WARN: HAM Modem write incomplete");
+    }
+    if (sent > 0) {
+        recordInterfaceTx(InterfaceType::HAM_MODEM, packetLen);
     }
 }
 
@@ -1524,6 +1667,7 @@ bool InterfaceManager::fetchIPFSContent(const char* ipfsHash, std::vector<uint8_
             }
             
             _httpClient.end();
+            recordInterfaceRx(InterfaceType::IPFS, bytesRead);
             DebugSerial.print("IF: IPFS content fetched: ");
             DebugSerial.print(bytesRead);
             DebugSerial.println(" bytes");
@@ -1589,6 +1733,7 @@ bool InterfaceManager::publishToIPFS(const uint8_t* data, size_t len, String& ip
             if (hashEnd > hashStart) {
                 ipfsHash = response.substring(hashStart, hashEnd);
                 _httpClient.end();
+                recordInterfaceTx(InterfaceType::IPFS, len);
                 DebugSerial.print("IF: IPFS content published, hash: ");
                 DebugSerial.println(ipfsHash);
                 return true;

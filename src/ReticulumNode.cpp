@@ -37,6 +37,30 @@ uint16_t nextValidPacketCounter(uint16_t currentCounter) {
     return currentCounter;
 }
 
+#if METRICS_ENABLED
+void appendInterfaceHealthObject(JsonObject interfaces, const char* name, const InterfaceHealthSnapshot& snapshot) {
+    JsonObject interfaceDoc = interfaces.createNestedObject(name);
+    interfaceDoc["supported"] = snapshot.supported;
+    interfaceDoc["usable"] = snapshot.usable;
+    interfaceDoc["last_rx_uptime_ms"] = snapshot.last_rx_uptime_ms;
+    interfaceDoc["last_tx_uptime_ms"] = snapshot.last_tx_uptime_ms;
+    interfaceDoc["rx_packets"] = snapshot.rx_packets;
+    interfaceDoc["tx_packets"] = snapshot.tx_packets;
+    interfaceDoc["rx_bytes"] = snapshot.rx_bytes;
+    interfaceDoc["tx_bytes"] = snapshot.tx_bytes;
+}
+
+void appendInterfaceHealth(JsonObject interfaces, InterfaceManager& interfaceManager) {
+    appendInterfaceHealthObject(interfaces, "serial_port", interfaceManager.getInterfaceHealthSnapshot(InterfaceType::SERIAL_PORT));
+    appendInterfaceHealthObject(interfaces, "esp_now", interfaceManager.getInterfaceHealthSnapshot(InterfaceType::ESP_NOW));
+    appendInterfaceHealthObject(interfaces, "wifi_udp", interfaceManager.getInterfaceHealthSnapshot(InterfaceType::WIFI_UDP));
+    appendInterfaceHealthObject(interfaces, "bluetooth", interfaceManager.getInterfaceHealthSnapshot(InterfaceType::BLUETOOTH));
+    appendInterfaceHealthObject(interfaces, "lora", interfaceManager.getInterfaceHealthSnapshot(InterfaceType::LORA));
+    appendInterfaceHealthObject(interfaces, "ham_modem", interfaceManager.getInterfaceHealthSnapshot(InterfaceType::HAM_MODEM));
+    appendInterfaceHealthObject(interfaces, "ipfs", interfaceManager.getInterfaceHealthSnapshot(InterfaceType::IPFS));
+}
+#endif
+
 } // namespace
 
 // Constructor: Initialize members, especially LinkManager passing *this
@@ -338,11 +362,14 @@ void ReticulumNode::checkMemoryUsage() {
 
 #if METRICS_ENABLED && METRICS_UDP_ENABLED
         // send JSON metrics over UDP broadcast
-        DynamicJsonDocument doc(256);
+    DynamicJsonDocument doc(3072);
         doc["heap_free"] = free_heap;
         doc["stack_high"] = highwater;
         doc["routes"] = _routingTable.getRouteCount();
+        doc["route_candidates"] = _routingTable.getRouteCandidateCount();
         doc["links"] = _linkManager.getActiveLinkCount();
+    JsonObject interfaces = doc.createNestedObject("interfaces");
+    appendInterfaceHealth(interfaces, _interfaceManager);
         String out; serializeJson(doc, out);
         _interfaceManager.sendUdpMetrics(out);
 #endif

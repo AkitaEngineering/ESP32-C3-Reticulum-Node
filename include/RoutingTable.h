@@ -50,7 +50,10 @@ public:
                 InterfaceManager* ifManager = nullptr);
 
     // Finds the best route for a destination address
-    RouteEntry* findRoute(const uint8_t *destination_addr);
+    RouteEntry* findRoute(const uint8_t *destination_addr,
+                          InterfaceType excludeInterface = InterfaceType::UNKNOWN,
+                          const std::function<bool(InterfaceType)> &isInterfaceUsable = nullptr);
+    RouteEntry* findRouteForInterface(const uint8_t *destination_addr, InterfaceType interface);
 
     // Removes expired routes
     void prune(InterfaceManager* ifManager = nullptr); // Pass IfMgr if peer removal is needed
@@ -58,8 +61,12 @@ public:
     // Prints the routing table to Serial
     void print();
 
-    // Return current route count
+    // Return count of distinct destinations currently reachable.
     size_t getRouteCount() const;
+    // Return total number of candidate route entries stored.
+    size_t getRouteCandidateCount() const;
+    // Return total number of candidate route entries stored for an interface.
+    size_t getRouteCandidateCountForInterface(InterfaceType interface) const;
 
     // Announce forwarding prevention
     bool shouldForwardAnnounce(uint32_t packet_id, const uint8_t* source_addr);
@@ -68,6 +75,12 @@ public:
 
 
 private:
+    static bool routeMatchesCandidate(const RouteEntry& entry, const uint8_t *destination_addr,
+                                      InterfaceType interface, const uint8_t* sender_mac,
+                                      const IPAddress& sender_ip, uint16_t sender_port);
+    static int routePriority(InterfaceType interface);
+    static bool isBetterRouteCandidate(const RouteEntry& candidate, const RouteEntry& currentBest);
+
     std::list<RouteEntry> _routes;
     unsigned long _last_prune_time = 0;
 

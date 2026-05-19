@@ -9,6 +9,54 @@
 // Constructor
 RoutingTable::RoutingTable() : _last_prune_time(0), _last_recent_announce_prune(0) {}
 
+bool RoutingTable::routeMatchesCandidate(const RouteEntry& entry, const uint8_t *destination_addr,
+                                         InterfaceType interface, const uint8_t* sender_mac,
+                                         const IPAddress& sender_ip, uint16_t sender_port) {
+    if (!destination_addr || !Utils::compareAddresses(entry.destination_addr, destination_addr)) {
+        return false;
+    }
+
+    if (entry.interface != interface) {
+        return false;
+    }
+
+    switch (interface) {
+        case InterfaceType::ESP_NOW:
+            return sender_mac && memcmp(entry.next_hop_mac, sender_mac, 6) == 0;
+        case InterfaceType::WIFI_UDP:
+            return sender_ip && entry.next_hop_ip == sender_ip && entry.next_hop_port == sender_port;
+        default:
+            return true;
+    }
+}
+
+int RoutingTable::routePriority(InterfaceType interface) {
+    switch (interface) {
+        case InterfaceType::WIFI_UDP: return ROUTE_PRIORITY_WIFI_UDP;
+        case InterfaceType::ESP_NOW: return ROUTE_PRIORITY_ESP_NOW;
+        case InterfaceType::LORA: return ROUTE_PRIORITY_LORA;
+        case InterfaceType::HAM_MODEM: return ROUTE_PRIORITY_HAM_MODEM;
+        case InterfaceType::SERIAL_PORT: return ROUTE_PRIORITY_SERIAL_PORT;
+        case InterfaceType::BLUETOOTH: return ROUTE_PRIORITY_BLUETOOTH;
+        case InterfaceType::IPFS: return ROUTE_PRIORITY_IPFS;
+        default: return 0;
+    }
+}
+
+bool RoutingTable::isBetterRouteCandidate(const RouteEntry& candidate, const RouteEntry& currentBest) {
+    if (candidate.hops != currentBest.hops) {
+        return candidate.hops < currentBest.hops;
+    }
+
+    const int candidatePriority = routePriority(candidate.interface);
+    const int currentPriority = routePriority(currentBest.interface);
+    if (candidatePriority != currentPriority) {
+        return candidatePriority > currentPriority;
+    }
+
+    return candidate.last_heard_time > currentBest.last_heard_time;
+}
+
 void RoutingTable::update(const RnsPacketInfo &announcePacket, InterfaceType interface,
                            const uint8_t* sender_mac, const IPAddress& sender_ip, uint16_t sender_port,
                            InterfaceManager* ifManager)
@@ -21,13 +69,9 @@ void RoutingTable::update(const RnsPacketInfo &announcePacket, InterfaceType int
     unsigned long now = millis();
     bool found = false;
 
-    // Check if route already exists
+    // Check if this exact route candidate already exists
     for (auto it = _routes.begin(); it != _routes.end(); ++it) {
-        if (Utils::compareAddresses(it->destination_addr, announcePacket.source)) {
-            // Route exists. Update if new info is better or from different interface?
-            // Simple strategy: Always update timestamp, interface, hops, next hop.
-            // More complex: Update only if hops are lower or similar but timestamp newer.
-            // Current: Always update with latest info.
+        if (routeMatchesCandidate(*it, announcePacket.source, interface, sender_mac, sender_ip, sender_port)) {
             it->last_heard_time = now;
             it->interface = interface;
             it->hops = announcePacket.hops;
@@ -50,10 +94,9 @@ void RoutingTable::update(const RnsPacketInfo &announcePacket, InterfaceType int
         }
     }
 
-    // If not found, add new route if space allows
+    // If not found, add a new candidate route if space allows
     if (!found) {
         if (_routes.size() < MAX_ROUTES) {
-            // DebugSerial.print("RT: Adding new route for "); Utils::printBytes(announcePacket.source, RNS_ADDRESS_SIZE, DebugSerial); // Verbose
             RouteEntry newEntry;
             memcpy(newEntry.destination_addr, announcePacket.source, RNS_ADDRESS_SIZE);
             newEntry.last_heard_time = now;
@@ -70,7 +113,6 @@ void RoutingTable::update(const RnsPacketInfo &announcePacket, InterfaceType int
                  newEntry.next_hop_ip = sender_ip;
                  newEntry.next_hop_port = RNS_UDP_PORT;
             }
-            // DebugSerial.print(" via If="); DebugSerial.print(static_cast<int>(interface)); DebugSerial.print(" Hops="); DebugSerial.println(newEntry.hops); // Verbose
             _routes.push_back(newEntry);
         } else {
             // Table full - Replace oldest entry
@@ -100,14 +142,48 @@ void RoutingTable::update(const RnsPacketInfo &announcePacket, InterfaceType int
     }
 }
 
-RouteEntry* RoutingTable::findRoute(const uint8_t *destination_addr) {
+RouteEntry* RoutingTable::findRoute(const uint8_t *destination_addr,
+                                    InterfaceType excludeInterface,
+                                    const std::function<bool(InterfaceType)> &isInterfaceUsable) {
     if (!destination_addr) return nullptr;
+
+    RouteEntry* best = nullptr;
     for (auto it = _routes.begin(); it != _routes.end(); ++it) {
-        if (Utils::compareAddresses(it->destination_addr, destination_addr)) {
-            return &(*it); // Return pointer to the found entry
+        if (!Utils::compareAddresses(it->destination_addr, destination_addr)) {
+            continue;
+        }
+
+        if (excludeInterface != InterfaceType::UNKNOWN && it->interface == excludeInterface) {
+            continue;
+        }
+
+        if (isInterfaceUsable && !isInterfaceUsable(it->interface)) {
+            continue;
+        }
+
+        if (!best || isBetterRouteCandidate(*it, *best)) {
+            best = &(*it);
         }
     }
-    return nullptr; // Not found
+
+    return best;
+}
+
+RouteEntry* RoutingTable::findRouteForInterface(const uint8_t *destination_addr, InterfaceType interface) {
+    if (!destination_addr) return nullptr;
+
+    RouteEntry* best = nullptr;
+    for (auto it = _routes.begin(); it != _routes.end(); ++it) {
+        if (!Utils::compareAddresses(it->destination_addr, destination_addr) || it->interface != interface) {
+            continue;
+        }
+
+        if (!best || isBetterRouteCandidate(*it, *best)) {
+            best = &(*it);
+        }
+    }
+
+    return best;
 }
 
 // Pass InterfaceManager to handle peer removal during pruning
@@ -150,7 +226,40 @@ void RoutingTable::print() {
 }
 
 size_t RoutingTable::getRouteCount() const {
+    std::vector<std::array<uint8_t, RNS_ADDRESS_SIZE>> destinations;
+    destinations.reserve(_routes.size());
+
+    for (const auto& entry : _routes) {
+        bool seen = false;
+        for (const auto& destination : destinations) {
+            if (memcmp(destination.data(), entry.destination_addr, RNS_ADDRESS_SIZE) == 0) {
+                seen = true;
+                break;
+            }
+        }
+
+        if (!seen) {
+            std::array<uint8_t, RNS_ADDRESS_SIZE> destination = {0};
+            memcpy(destination.data(), entry.destination_addr, RNS_ADDRESS_SIZE);
+            destinations.push_back(destination);
+        }
+    }
+
+    return destinations.size();
+}
+
+size_t RoutingTable::getRouteCandidateCount() const {
     return _routes.size();
+}
+
+size_t RoutingTable::getRouteCandidateCountForInterface(InterfaceType interface) const {
+    size_t count = 0;
+    for (const auto& entry : _routes) {
+        if (entry.interface == interface) {
+            ++count;
+        }
+    }
+    return count;
 }
 
 // --- Announce Forwarding Prevention ---

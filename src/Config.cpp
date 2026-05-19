@@ -12,14 +12,26 @@ namespace {
 #if JSON_CONFIG_ENABLED
 constexpr const char* CONFIG_PATH = "/config.json";
 
-bool loadConfigString(const char* key, char* out, size_t outSize) {
+struct RuntimeConfigCache {
+	bool initialized = false;
+	char nodeName[48] = {0};
+	char appName[64] = {0};
+};
+
+RuntimeConfigCache runtimeConfigCache;
+
+bool ensureConfigFsMounted() {
 	static bool attemptedMount = false;
 	static bool mounted = false;
 	if (!attemptedMount) {
 		mounted = SPIFFS.begin(false);
 		attemptedMount = true;
 	}
-	if (!mounted || !SPIFFS.exists(CONFIG_PATH)) {
+	return mounted;
+}
+
+bool loadRuntimeConfigDocument(DynamicJsonDocument& doc) {
+	if (!ensureConfigFsMounted() || !SPIFFS.exists(CONFIG_PATH)) {
 		return false;
 	}
 
@@ -28,20 +40,29 @@ bool loadConfigString(const char* key, char* out, size_t outSize) {
 		return false;
 	}
 
-	DynamicJsonDocument doc(1024);
 	DeserializationError err = deserializeJson(doc, f);
 	f.close();
-	if (err) {
-		return false;
+	return !err;
+}
+
+void populateRuntimeConfigCache() {
+	snprintf(runtimeConfigCache.nodeName, sizeof(runtimeConfigCache.nodeName), "%s", getDefaultDeviceName());
+	snprintf(runtimeConfigCache.appName, sizeof(runtimeConfigCache.appName), "%s", RNS_APP_NAME);
+
+	DynamicJsonDocument doc(1024);
+	if (loadRuntimeConfigDocument(doc)) {
+		const char* nodeName = doc["node_name"] | "";
+		if (nodeName && nodeName[0] != '\0') {
+			snprintf(runtimeConfigCache.nodeName, sizeof(runtimeConfigCache.nodeName), "%s", nodeName);
+		}
+
+		const char* appName = doc["rns_app_name"] | "";
+		if (appName && appName[0] != '\0') {
+			snprintf(runtimeConfigCache.appName, sizeof(runtimeConfigCache.appName), "%s", appName);
+		}
 	}
 
-	const char* value = doc[key] | "";
-	if (!value || value[0] == '\0') {
-		return false;
-	}
-
-	snprintf(out, outSize, "%s", value);
-	return true;
+	runtimeConfigCache.initialized = true;
 }
 #endif
 
@@ -71,33 +92,37 @@ const char* getDefaultDeviceName() {
 }
 
 const char* getConfiguredNodeName() {
-	static char nodeName[48] = {0};
-	static bool initialized = false;
-	if (!initialized) {
 #if JSON_CONFIG_ENABLED
-		if (!loadConfigString("node_name", nodeName, sizeof(nodeName))) {
-			snprintf(nodeName, sizeof(nodeName), "%s", getDefaultDeviceName());
+		if (!runtimeConfigCache.initialized) {
+			populateRuntimeConfigCache();
 		}
+		return runtimeConfigCache.nodeName;
 #else
-		snprintf(nodeName, sizeof(nodeName), "%s", getDefaultDeviceName());
+		return getDefaultDeviceName();
 #endif
-		initialized = true;
-	}
-	return nodeName;
 }
 
 const char* getConfiguredAppName() {
-	static char appName[64] = {0};
-	static bool initialized = false;
-	if (!initialized) {
 #if JSON_CONFIG_ENABLED
-		if (!loadConfigString("rns_app_name", appName, sizeof(appName))) {
-			snprintf(appName, sizeof(appName), "%s", RNS_APP_NAME);
+		if (!runtimeConfigCache.initialized) {
+			populateRuntimeConfigCache();
 		}
+		return runtimeConfigCache.appName;
 #else
-		snprintf(appName, sizeof(appName), "%s", RNS_APP_NAME);
+		return RNS_APP_NAME;
 #endif
-		initialized = true;
-	}
-	return appName;
+}
+
+void reloadRuntimeConfigCache() {
+#if JSON_CONFIG_ENABLED
+	populateRuntimeConfigCache();
+#endif
+}
+
+bool hasRuntimeConfigFile() {
+#if JSON_CONFIG_ENABLED
+	return ensureConfigFsMounted() && SPIFFS.exists(CONFIG_PATH);
+#else
+	return false;
+#endif
 }

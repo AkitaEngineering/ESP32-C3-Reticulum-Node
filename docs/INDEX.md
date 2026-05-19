@@ -35,6 +35,7 @@ This document serves as the master index for all technical documentation related
 - **docs/ENHANCED_FEATURES.md**: Enhanced features documentation (audio modem, AX.25, APRS, Winlink)
 - **docs/ROADMAP.md**: Project roadmap and planned enhancements
 - **docs/API.md**: Web UI / REST API specification and endpoints
+- **docs/COMMERCIALIZATION_STRATEGY.md**: Product definition, target market, monetization, and commercialization-oriented engineering priorities
 
 ---
 
@@ -96,6 +97,14 @@ Feature Documentation
     ├── Enhanced APRS
     ├── IPFS Publishing
     └── Winlink Integration
+
+Strategy Documentation
+└── COMMERCIALIZATION_STRATEGY.md
+    ├── Product Thesis
+    ├── Beachhead Market
+    ├── Commercial Offer
+    ├── Engineering Priorities
+    └── Go-To-Market Sequence
 ```
 
 ---

@@ -313,6 +313,8 @@ extern const char *WIFI_PASSWORD; // <<< CHANGE ME in Config.cpp
 const char* getDefaultDeviceName();
 const char* getConfiguredNodeName();
 const char* getConfiguredAppName();
+void reloadRuntimeConfigCache();
+bool hasRuntimeConfigFile();
 
 // Derive Reticulum node address from the chip eFuse MAC on boot.
 // This prevents duplicate logical node addresses when flash/EEPROM images are cloned.
@@ -365,6 +367,31 @@ static_assert(LINK_MAX_ACTIVE > 0, "LINK_MAX_ACTIVE must be at least 1");
 // --- Routing & Limits ---
 const size_t MAX_ROUTES = 20;             // Max entries in routing table
 const size_t MAX_RECENT_ANNOUNCES = 40; // Max announce IDs to remember for loop prevention
+
+// Route selection policy: lower hop count wins first, then interface priority,
+// then most recent route update. Override these in build flags to tailor field
+// failover behavior for a deployment.
+#ifndef ROUTE_PRIORITY_WIFI_UDP
+#define ROUTE_PRIORITY_WIFI_UDP 50
+#endif
+#ifndef ROUTE_PRIORITY_ESP_NOW
+#define ROUTE_PRIORITY_ESP_NOW 40
+#endif
+#ifndef ROUTE_PRIORITY_LORA
+#define ROUTE_PRIORITY_LORA 30
+#endif
+#ifndef ROUTE_PRIORITY_HAM_MODEM
+#define ROUTE_PRIORITY_HAM_MODEM 25
+#endif
+#ifndef ROUTE_PRIORITY_SERIAL_PORT
+#define ROUTE_PRIORITY_SERIAL_PORT 15
+#endif
+#ifndef ROUTE_PRIORITY_BLUETOOTH
+#define ROUTE_PRIORITY_BLUETOOTH 10
+#endif
+#ifndef ROUTE_PRIORITY_IPFS
+#define ROUTE_PRIORITY_IPFS 5
+#endif
 
 // compile‑time sanity
 static_assert(MAX_ROUTES > 0, "MAX_ROUTES must be positive");

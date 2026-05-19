@@ -45,6 +45,7 @@ public:
     void saveConfigNow();
     // Return current in-memory packet counter (for tests/inspection)
     uint16_t getPacketCounter() const;
+    const char* getRuntimeAppName() const { return _appName.c_str(); }
 
 private:
     // --- Initialization Helpers ---
