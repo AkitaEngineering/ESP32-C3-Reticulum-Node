@@ -44,10 +44,10 @@ A multi-interface [Reticulum](https://reticulum.network/) gateway firmware for E
 git clone https://github.com/AkitaEngineering/ESP32-C3-Reticulum-Node
 cd ESP32-C3-Reticulum-Node
 
-# Build the default environment (ESP32-C3-DevKitM-1)
-pio run -e esp32-c3-devkitm-1
+# Build the default production USB/KISS environment
+pio run
 
-# Flash to connected board
+# Flash a dev/debug build to a connected board
 pio run -e esp32-c3-devkitm-1 -t upload
 
 # Monitor serial output (115200 baud)
@@ -56,7 +56,7 @@ pio device monitor -b 115200
 
 ### Configure WiFi
 
-Edit `include/Config.h`:
+Edit `src/Config.cpp`:
 
 ```cpp
 const char *WIFI_SSID     = "your_ssid";
@@ -122,7 +122,13 @@ Example Reticulum configuration (`~/.reticulum/config`):
 | `ttgo-t-oi-plus` | TTGO T-OI Plus (web + OTA) |
 | `heltec_wifi_lora_32_V3` | Heltec LoRa32 v3 (LoRa enabled) |
 
-Build all environments: `pio run`
+Build the default environment: `pio run`
+
+Build a specific environment:
+
+```bash
+pio run -e esp32-c3-devkitm-1
+```
 
 ### Runtime JSON Config
 
@@ -159,7 +165,7 @@ src/                  Firmware source code
   WebServer.cpp       REST API & Web UI
   Config.cpp          Runtime JSON configuration
   Utils.cpp           Utility functions
-  Winlink.cpp         Winlink gateway stub
+  Winlink.cpp         Experimental Winlink-style message adapter
 
 test/                 PlatformIO unit tests
 tests/                Hardware integration & debug scripts (Python)
@@ -200,7 +206,7 @@ Build flags control feature inclusion:
 | `-DLORA_ENABLED=1` | Enable LoRa radio interface |
 | `-DHAM_MODEM_ENABLED=1` | Enable HAM radio TNC interface |
 | `-DMETRICS_ENABLED=1` | Enable /metrics endpoint |
-| `-DBLE_PROVISIONING_ENABLED=1` | BLE GATT provisioning (stub) |
+| `-DBLE_PROVISIONING_ENABLED=1` | Reserved for BLE GATT provisioning; not included in production builds |
 
 ## Debug Commands
 
@@ -250,9 +256,14 @@ ser.rts = False
 
 ## Testing
 
-Unit tests (PlatformIO native):
+Compile unit-test firmware without an attached board:
 ```bash
-pio test -e esp32-c3-devkitm-1
+pio test -e test --without-uploading --without-testing
+```
+
+Run unit tests on a connected board:
+```bash
+pio test -e test --test-port /dev/serial/by-id/<board>
 ```
 
 Integration tests (require connected hardware):

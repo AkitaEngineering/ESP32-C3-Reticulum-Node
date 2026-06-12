@@ -8,8 +8,9 @@
 // involve a float format specifier (%f, %e, %g, etc.).  This approach
 // keeps integer/string printf working while still avoiding the crash.
 //
-// Guard this symbol so it only applies to RISC‑V / ESP32‑C3 builds.
-// TODO: remove this stub when upstream toolchain/newlib is fixed (see issue).
+// Guard this symbol so it only applies to RISC-V / ESP32-C3 builds.
+// Keep this workaround local to the affected target family; removing it should
+// be tied to a verified toolchain/newlib upgrade on ESP32-C3 hardware.
 
 #include <stdarg.h>
 #include <stdio.h>

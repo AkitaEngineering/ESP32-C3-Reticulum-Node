@@ -88,6 +88,9 @@ public:
     static bool parseWeather(const char* data, Weather& weather);
     
 private:
+    // Encode a non-negative integer as fixed-width APRS base-91.
+    static void encodeBase91(uint32_t value, char* output, size_t width);
+
     // Convert degrees to APRS format (DDMM.MM or DDMMSS)
     static void degreesToAPRS(float degrees, bool isLatitude, char* output);
     

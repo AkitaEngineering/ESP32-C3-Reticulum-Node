@@ -12,7 +12,7 @@ public:
     // Call from main loop to service any async tasks
     static void loop();
 
-    // Load/Save runtime JSON config (returns false if not implemented)
+    // Validate/read runtime JSON config. Saving is handled by the REST config endpoint.
     static bool loadConfigFromFS(const char* path = "/config.json");
     static bool saveConfigToFS(const char* path = "/config.json");
 };

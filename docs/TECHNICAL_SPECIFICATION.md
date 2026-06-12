@@ -307,7 +307,7 @@ pio run -e <environment_name>
 
 #### 6.3.4 BLE Provisioning
 - **Enable**: build with `-DBLE_PROVISIONING_ENABLED=1`.
-- **Procedure**: Connect over BLE GATT and write WiFi credentials or callsign using the provisioning service (implementation stubbed).
+- **Procedure**: BLE provisioning is reserved for a future build profile and is not part of the production firmware targets.
 
 #### 6.3.5 Metrics Endpoint
 - **Enable**: build with `-DMETRICS_ENABLED=1`.

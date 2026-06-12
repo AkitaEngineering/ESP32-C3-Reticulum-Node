@@ -6,7 +6,8 @@ All endpoints are served on HTTP (port defined by `WEBSERVER_PORT`) and use simp
 
 Authentication
 - The API uses Bearer token authentication when `WEBSERVER_AUTH_ENABLED=1` and a token is configured in the runtime JSON config.
-- If no token is configured (first-time bootstrap) the API allows initial configuration without authentication.
+- If no config file exists, selected bootstrap endpoints allow initial configuration without authentication.
+- If `/config.json` exists with an empty token or the placeholder token `CHANGE_ME_generate_a_strong_token`, authenticated endpoints fail closed. Replace the placeholder with a strong per-device token before enabling the Web UI in the field.
 - Header: `Authorization: Bearer <token>`
 
 Common response codes
@@ -22,15 +23,15 @@ Endpoints
 
 - `GET /api/v1/status`
   - Returns JSON with node status metrics, provisioning state, and per-interface health snapshots (uptime, free heap, link counts, route count, stable device ID, config presence, bootstrap mode, WiFi state, restart-required state, interface support/usability, packet counters, and last RX/TX uptime timestamps).
-  - Auth: optional depending on `WEBSERVER_AUTH_ENABLED`.
+  - Auth: required unless the device is in first-time bootstrap mode.
 
 - `GET /api/v1/routes`
   - Returns grouped route diagnostics by destination, including all candidate paths, the currently selected path, and the effective interface-priority policy used for tie-breaks.
-  - Auth: optional depending on `WEBSERVER_AUTH_ENABLED`.
+  - Auth: required.
 
 - `GET /api/v1/config`
   - Returns the runtime JSON configuration (from `/config.json` in SPIFFS) or a default template when not present.
-  - Auth: required when a token exists.
+  - Auth: required unless the device is in first-time bootstrap mode.
   - Response: JSON config document.
   - Routing policy: `routing.interface_priority` can override interface tie-break priorities at runtime without rebuilding firmware.
 
@@ -41,6 +42,7 @@ Endpoints
     - `X-Restart-Required: true|false` — indicates whether the saved configuration includes changes that require a reboot to take full effect.
     - `X-Restart-Reason: <reason>` — currently returned when `rns_app_name` changed and the running node still uses the previous application name.
   - Auth: required when a token exists.
+  - First-time bootstrap is allowed only when no `/config.json` exists.
   - Returns the saved JSON on success.
 
 - `POST /api/v1/config/save`
@@ -85,10 +87,6 @@ curl -X POST \
 Implementation notes
 - The implementation verifies uploaded image size and bounds the verification buffer to avoid large RAM allocations (see `MAX_OTA_VERIFY_SIZE` in `WebServer.cpp`).
 - If you plan to integrate tooling for OTA automation, use the `api.public_key` field in your device config for signature verification.
-
-Next steps (optional)
-- Provide an OpenAPI (Swagger) JSON/YAML export to enable automatic SDK generation and interactive docs.
-- Add example Postman collection or CLI helper scripts to streamline provisioning.
 
 OpenAPI and CLI helpers
 - An OpenAPI v3 description is provided in `docs/openapi.yaml` for tooling and SDK generation.
@@ -265,59 +263,3 @@ Examples
 
 
 ---
-Generated docs: concise reference for the Web UI endpoints implemented in `src/WebServer.cpp`.
-# Web UI & REST API — Spec (draft)
-
-This document describes the initial REST API and WebSocket endpoints for the planned Web UI.
-All endpoints require authentication when enabled (future: token / password protected).
-
-## Endpoints (HTTP, JSON)
-- GET /api/v1/status
-  - Returns device status, uptime, heap, active links, routing table summary.
-- GET /api/v1/config
-  - Returns current runtime config (from JSON config store if enabled).
-- POST /api/v1/config
-  - Accepts JSON body to update runtime config (validated); responds with saved config.
-- POST /api/v1/config/save
-  - Persist current runtime config to SPIFFS/LittleFS (if JSON_CONFIG_ENABLED).
-- POST /api/v1/restart
-  - Request soft restart of node (admin only).
-- GET /api/v1/metrics
-  - Prometheus-style or JSON metrics endpoint (if METRICS_ENABLED).
-  - When `METRICS_UDP_ENABLED` is also set the node will emit the same
-    metrics as a JSON string over UDP broadcast every `METRICS_INTERVAL_MS`.
-- POST /api/v1/ota
-  - Upload a signed firmware image for OTA. Requires `OTA_ENABLED` and an Ed25519 `public_key` in `/config.json` under `api.public_key`.
-  - Headers: `X-Signature-Ed25519: <hex-signature>` (64-byte signature, hex-encoded)
-  - Body: raw firmware binary (application/octet-stream)
-
-Example (host):
-
-curl -X POST \
-  -H "Authorization: Bearer <API_TOKEN>" \
-  -H "X-Signature-Ed25519: <hex-signature>" \
-  --data-binary @firmware.bin \
-  http://<node-ip>/api/v1/ota
-
-Security notes:
-- When `api.token` is set in config, all sensitive endpoints require `Authorization: Bearer <token>`.
-- Keep the private signing key offline and only sign release artifacts.
-
-## WebSocket
-- /ws/console — real-time log stream and packet events
-  - Messages: { "type": "log", "level": "info", "msg": "..." }
-  - Messages: { "type": "packet", "dir": "rx|tx", "hex": "...", "decoded": {...} }
-
-## Security & Auth (design)
-- Web UI must be behind a password or token by default.
-- Use HTTPS for remote access; otherwise restrict to local networks.
-- Future: integrate signed JWT tokens and role-based control.
-
-## Implementation notes
-- Minimal server will be implemented as optional module compiled when `WEBSERVER_ENABLED`.
-- Use AsyncWebServer (recommended) or WebServer for smaller footprint.
-- Config persistence stored in `/config.json` when `JSON_CONFIG_ENABLED`.
-
----
-
-This is a draft — endpoints and payloads will be finalized while implementing the Web UI feature.

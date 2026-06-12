@@ -74,7 +74,6 @@ InterfaceManager::InterfaceManager(PacketReceiverCallback receiver, RoutingTable
     if (_instance != nullptr) {
          // This should not happen if InterfaceManager is instantiated only once by ReticulumNode
          DebugSerial.println("! FATAL: Multiple InterfaceManager instances detected!");
-         // Handle error: abort?
          return;
     }
     _instance = this; // Set the static instance pointer
@@ -354,7 +353,7 @@ void InterfaceManager::processWiFiInput() {
     if (packetSize > 0) {
         if (packetSize > MAX_PACKET_SIZE) {
              DebugSerial.print("! WARN: Oversized UDP packet received ("); DebugSerial.print(packetSize); DebugSerial.println(" bytes), discarding.");
-             _udp.flush(); // Discard data
+             _udp.clear(); // Discard data
              return;
         }
 
@@ -362,7 +361,7 @@ void InterfaceManager::processWiFiInput() {
         std::unique_ptr<uint8_t[]> udpBuffer(new (std::nothrow) uint8_t[packetSize]);
         if (!udpBuffer) {
              LOG_ERROR("new failed for UDP buffer!");
-             _udp.flush();
+             _udp.clear();
              return;
         }
 
@@ -853,7 +852,7 @@ bool InterfaceManager::addEspNowPeer(const uint8_t* mac_addr) {
     esp_now_peer_info_t peerInfo = {}; // Initialize all fields to 0/false/etc.
     memcpy(peerInfo.peer_addr, mac_addr, 6);
     // peerInfo.channel = 0; // Use current channel by default
-    peerInfo.encrypt = false; // Encryption disabled (requires shared keys)
+    peerInfo.encrypt = false; // ESP-NOW link-layer encryption requires provisioned shared peer keys.
     // Try adding peer. On some IDF/Arduino builds the driver requires the ifidx
     // (station vs softAP) to be set. Try without ifidx first, then retry with
     // WIFI_IF_STA if the first attempt fails.
@@ -1133,16 +1132,13 @@ void InterfaceManager::staticEspNowRecvCallback(const uint8_t *mac_addr, const u
     }
 }
 
-/* Optional Static Send Callback
+#if defined(ESP_IDF_VERSION_MAJOR) && (ESP_IDF_VERSION_MAJOR >= 5)
+void InterfaceManager::staticEspNowSendCallback(const wifi_tx_info_t *tx_info, esp_now_send_status_t status) {
+    (void)tx_info;
+#else
 void InterfaceManager::staticEspNowSendCallback(const uint8_t *mac_addr, esp_now_send_status_t status) {
-    if (_instance && mac_addr) {
-        // Could notify routing table or link manager about send status
-        // DebugSerial.print("IF: ESP-NOW Send Status to MAC "); Utils::printBytes(mac_addr, 6, DebugSerial); DebugSerial.print(": "); DebugSerial.println(status == ESP_NOW_SEND_SUCCESS ? "Success" : "Fail");
-    }
-}
-*/
-
-void InterfaceManager::staticEspNowSendCallback(const uint8_t *mac_addr, esp_now_send_status_t status) {
+    (void)mac_addr;
+#endif
     if (_instance) {
         if (status == ESP_NOW_SEND_SUCCESS) _instance->espNowTxOk++;
         else _instance->espNowTxFail++;

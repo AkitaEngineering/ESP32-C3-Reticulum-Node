@@ -20,7 +20,7 @@ inline void initStatusLed() {
 
 inline void setStatusLed(bool on) {
 #if defined(RGB_BUILTIN)
-    neopixelWrite(RGB_BUILTIN, 0, 0, on ? 20 : 0);
+    rgbLedWrite(RGB_BUILTIN, 0, 0, on ? 20 : 0);
 #else
     digitalWrite(LED_BUILTIN, on ? HIGH : LOW);
 #endif

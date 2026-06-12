@@ -61,6 +61,18 @@ static void sendUnauthorized(WiFiClient &client) {
     client.print(body);
 }
 
+static bool hasSavedConfig() {
+#if JSON_CONFIG_ENABLED
+    return SPIFFS.exists(CONFIG_PATH);
+#else
+    return false;
+#endif
+}
+
+static bool isPlaceholderApiToken(const String &token) {
+    return token.length() == 0 || token == "CHANGE_ME_generate_a_strong_token";
+}
+
 #if JSON_CONFIG_ENABLED
 static String getSavedApiToken() {
     if (!SPIFFS.exists(CONFIG_PATH)) return String();
@@ -79,7 +91,11 @@ static String getSavedApiToken() {
 
 static bool isBootstrapMode() {
 #if WEBSERVER_AUTH_ENABLED
-    return getSavedApiToken().length() == 0;
+    #if JSON_CONFIG_ENABLED
+    return !hasSavedConfig();
+    #else
+    return false;
+    #endif
 #else
     return false;
 #endif
@@ -204,17 +220,21 @@ static void appendRouteDiagnostics(JsonArray destinations, const std::vector<Rou
     }
 }
 
-static bool checkAuth(const String &authHeader) {
+static bool checkAuth(const String &authHeader, bool allowBootstrap = false) {
 #if WEBSERVER_AUTH_ENABLED
     String expected;
 #if JSON_CONFIG_ENABLED
     expected = getSavedApiToken();
 #endif
     expected.trim();
-    // If no token configured, allow bootstrap (first-time config)
-    if (expected.length() == 0) {
-        LOG_WARN("WebServer: No API token configured - bootstrap mode (unauthenticated access)");
-        return true;
+
+    if (isPlaceholderApiToken(expected)) {
+        if (allowBootstrap && isBootstrapMode()) {
+            LOG_WARN("WebServer: No config present - allowing first-time bootstrap access");
+            return true;
+        }
+        LOG_WARN("WebServer: API token missing or placeholder - denying request");
+        return false;
     }
 
     String token = authHeader;
@@ -303,7 +323,7 @@ void processHttpClient(WiFiClient &client) {
 
     // Route handling
     if (method == "GET" && path == "/api/v1/status") {
-        if (!checkAuth(authHeader)) { sendUnauthorized(client); return; }
+        if (!checkAuth(authHeader, true)) { sendUnauthorized(client); return; }
         reloadRuntimeConfigCache();
         DynamicJsonDocument doc(3072);
         String restartReason;
@@ -359,7 +379,7 @@ void processHttpClient(WiFiClient &client) {
         sendResponse(client, 200, "application/json", out);
 
     } else if (method == "GET" && path == "/api/v1/config") {
-        if (!checkAuth(authHeader)) { sendUnauthorized(client); return; }
+        if (!checkAuth(authHeader, true)) { sendUnauthorized(client); return; }
         DynamicJsonDocument doc(1024);
         if (SPIFFS.exists(CONFIG_PATH)) {
             File f = SPIFFS.open(CONFIG_PATH, FILE_READ);
@@ -386,7 +406,7 @@ void processHttpClient(WiFiClient &client) {
         sendResponse(client, 200, "application/json", out);
 
     } else if (method == "POST" && path == "/api/v1/config") {
-        if (!checkAuth(authHeader)) { sendUnauthorized(client); return; }
+        if (!checkAuth(authHeader, true)) { sendUnauthorized(client); return; }
         DynamicJsonDocument doc(2048);
         DeserializationError err = deserializeJson(doc, body);
         if (err) { sendResponse(client, 400, "text/plain", "Invalid JSON"); return; }
@@ -568,7 +588,7 @@ void WebServerManager::begin() {
 }
 
 void WebServerManager::loop() {
-    WiFiClient client = _server.available();
+    WiFiClient client = _server.accept();
     if (client) {
         if (client.connected()) {
             processHttpClient(client);
@@ -594,7 +614,8 @@ bool WebServerManager::loadConfigFromFS(const char* path) {
 
 bool WebServerManager::saveConfigToFS(const char* path) {
 #if JSON_CONFIG_ENABLED
-    (void)path; return true; // Config saving is handled in processHttpClient
+    (void)path;
+    return false;
 #else
     (void)path; return false;
 #endif

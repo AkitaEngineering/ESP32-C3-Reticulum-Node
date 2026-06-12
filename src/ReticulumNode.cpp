@@ -140,7 +140,7 @@ void ReticulumNode::setup() {
     // Ensure routing table prune timer is initialized
     _routingTable.prune(nullptr); // Initial call to set timer base
 
-    LOG_INFO("Node Setup Complete. Free Heap: %u", ESP.getFreeHeap());
+    LOG_INFO("Node Setup Complete. Free Heap: %lu", static_cast<unsigned long>(ESP.getFreeHeap()));
 
 #if WEBSERVER_ENABLED
     _webServerManager.begin();

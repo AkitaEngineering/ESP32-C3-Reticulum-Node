@@ -11,6 +11,8 @@ void test_packet_counter_wrap_skips_reserved_values(void);
 void test_rns_destination_hash_plain(void);
 void test_rns_sha256_empty(void);
 void test_rns_name_hash(void);
+void test_aprs_uncompressed_position_roundtrip(void);
+void test_aprs_compressed_position_format(void);
 
 void setup() {
     // On ESP32-C3 with ARDUINO_USB_MODE=1, USB CDC must be started
@@ -28,6 +30,8 @@ void setup() {
     RUN_TEST(test_rns_sha256_empty);
     RUN_TEST(test_rns_name_hash);
     RUN_TEST(test_rns_destination_hash_plain);
+    RUN_TEST(test_aprs_uncompressed_position_roundtrip);
+    RUN_TEST(test_aprs_compressed_position_format);
     UNITY_END();
 }
 

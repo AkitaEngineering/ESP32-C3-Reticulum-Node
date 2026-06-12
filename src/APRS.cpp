@@ -5,6 +5,14 @@
 
 // APRS Implementation
 
+void APRS::encodeBase91(uint32_t value, char* output, size_t width) {
+    for (size_t i = width; i > 0; --i) {
+        output[i - 1] = (char)((value % 91) + 33);
+        value /= 91;
+    }
+    output[width] = 0;
+}
+
 void APRS::degreesToAPRS(float degrees, bool isLatitude, char* output) {
     bool negative = degrees < 0;
     degrees = fabsf(degrees);
@@ -49,7 +57,30 @@ float APRS::aprsToDegrees(const char* data, bool isLatitude) {
 
 void APRS::formatPosition(const Position& pos, char* output, bool compressed) {
     if (compressed) {
-        // Compressed format not implemented yet; fall back to uncompressed
+        float latitude = fminf(fmaxf(pos.latitude, -90.0f), 90.0f);
+        float longitude = fminf(fmaxf(pos.longitude, -180.0f), 180.0f);
+        uint32_t latValue = (uint32_t)lroundf(380926.0f * (90.0f - latitude));
+        uint32_t lonValue = (uint32_t)lroundf(190463.0f * (180.0f + longitude));
+        char lat[5], lon[5];
+        encodeBase91(latValue, lat, 4);
+        encodeBase91(lonValue, lon, 4);
+
+        if (pos.course > 0 || pos.speed > 0) {
+            uint8_t course = (uint8_t)((pos.course % 360) / 4);
+            uint16_t speed = pos.speed;
+            uint8_t speedCode = 0;
+            while (speed > 1 && speedCode < 89) {
+                speed = (uint16_t)((speed + 1) / 1.08f);
+                speedCode++;
+            }
+            snprintf(output, 16, "!%c%s%s%c%c%c ",
+                     pos.symbolTable, lat, lon, pos.symbol,
+                     (char)(course + 33), (char)(speedCode + 33));
+        } else {
+            snprintf(output, 16, "!%c%s%s%c  ",
+                     pos.symbolTable, lat, lon, pos.symbol);
+        }
+        return;
     }
     // Uncompressed: !DDMM.MMN/DDDMM.MME[CSE/SPD
     char lat[10], lon[11];

@@ -113,10 +113,11 @@ public:
     // Static callbacks needed for C-style APIs like ESP-NOW
 #if defined(ESP_IDF_VERSION_MAJOR) && (ESP_IDF_VERSION_MAJOR >= 5)
     static void staticEspNowRecvCallback(const esp_now_recv_info_t *recv_info, const uint8_t *incomingData, int len);
+    static void staticEspNowSendCallback(const wifi_tx_info_t *tx_info, esp_now_send_status_t status);
 #else
     static void staticEspNowRecvCallback(const uint8_t *mac_addr, const uint8_t *incomingData, int len);
-#endif
     static void staticEspNowSendCallback(const uint8_t *mac_addr, esp_now_send_status_t status);
+#endif
 
     // ESP-NOW diagnostic counters (readable from host via KISS cmd 0x06)
     uint32_t espNowTxOk = 0;
