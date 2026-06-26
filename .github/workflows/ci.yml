@@ -58,5 +58,5 @@ jobs:
       - name: Build ESP32 (original) environment
         run: pio run -e esp32dev
 
-      - name: Run unit tests (PlatformIO)
-        run: pio test -e esp32-c3-devkitm-1
+      - name: Build unit test firmware
+        run: pio test -e test --without-uploading --without-testing

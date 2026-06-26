@@ -1,3 +1,5 @@
+# Upload a signed firmware binary to the device OTA endpoint.
+# SignatureFile must contain Ed25519(SHA-512(firmware.bin)); use sign_firmware.ps1.
 param(
     [Parameter(Mandatory=$true)][string]$Device,
     [Parameter(Mandatory=$true)][int]$Port,

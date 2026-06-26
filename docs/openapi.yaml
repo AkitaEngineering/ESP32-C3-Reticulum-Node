@@ -205,7 +205,7 @@ paths:
           schema:
             type: string
           required: true
-          description: Hex-encoded Ed25519 signature for the uploaded binary
+          description: Hex-encoded Ed25519 signature of SHA-512(firmware.bin)
       requestBody:
         content:
           application/octet-stream:

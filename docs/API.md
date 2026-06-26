@@ -51,10 +51,10 @@ Endpoints
 
 - `POST /api/v1/ota`
   - Signed OTA upload endpoint (enabled with `OTA_ENABLED=1`).
-  - Uploads are streamed to a temporary file in SPIFFS, verified using Ed25519 signature, then flashed via `Update`.
+  - Uploads are streamed to a temporary file in SPIFFS, hashed with SHA-512 while streaming, verified using Ed25519 signature, then flashed via `Update`.
   - Required headers:
     - `Content-Length: <bytes>`
-    - `X-Signature-Ed25519: <hex_signature>` — Ed25519 signature of the uploaded binary
+    - `X-Signature-Ed25519: <hex_signature>` — Ed25519 signature of the 64-byte `SHA-512(firmware.bin)` digest
     - Authorization: Bearer token (if enabled)
   - The public key used to verify signatures is read from the runtime JSON config (`api.public_key`).
   - On signature verification failure the endpoint returns `403 Invalid signature`.
@@ -76,7 +76,9 @@ curl -X POST -H "Content-Type: application/json" -H "Authorization: Bearer ${TOK
 - To upload signed OTA (high-level example):
 
 ```bash
-# Build firmware -> firmware.bin, sign it with your Ed25519 private key -> signature.hex
+# Build firmware -> firmware.bin, sign SHA-512(firmware.bin) with your Ed25519 private key -> signature.hex
+./tools/sign_firmware.sh firmware.bin keys/ota-ed25519.pem signature.hex
+
 curl -X POST \
   -H "Authorization: Bearer ${TOKEN}" \
   -H "X-Signature-Ed25519: $(cat signature.hex)" \
@@ -85,13 +87,15 @@ curl -X POST \
 ```
 
 Implementation notes
-- The implementation verifies uploaded image size and bounds the verification buffer to avoid large RAM allocations (see `MAX_OTA_VERIFY_SIZE` in `WebServer.cpp`).
+- The implementation verifies uploaded image size and hashes the upload as it streams, avoiding full-image RAM allocation on ESP32-C3.
 - If you plan to integrate tooling for OTA automation, use the `api.public_key` field in your device config for signature verification.
 
 OpenAPI and CLI helpers
 - An OpenAPI v3 description is provided in `docs/openapi.yaml` for tooling and SDK generation.
 - CLI helper scripts for quick provisioning and signed OTA uploads are available in `tools/`:
   - `tools/provision.sh` — POST a JSON config to `/api/v1/config` and print the response (requires `jq` for pretty output).
+  - `tools/make_device_config.py` — Generate per-device config files and a provisioning manifest.
+  - `tools/sign_firmware.sh` — Generate the OTA signature expected by `/api/v1/ota`.
   - `tools/ota_upload.sh` — Upload a signed binary to `/api/v1/ota` with `X-Signature-Ed25519` header.
 
 API request/response schemas
@@ -244,7 +248,7 @@ API request/response schemas
 - `POST /api/v1/config` request: any valid JSON object matching your runtime config. Response is the saved JSON document on success.
 - `POST /api/v1/config` also returns `X-Restart-Required` and, when applicable, `X-Restart-Reason` so provisioning tools can prompt for a controlled restart instead of assuming every saved change applied live.
 
-- `POST /api/v1/ota` request: binary body, header `X-Signature-Ed25519` required with hex signature. Responses: `200` (ok), `400` (bad upload), `403` (invalid signature).
+- `POST /api/v1/ota` request: binary body, header `X-Signature-Ed25519` required with hex Ed25519 signature over `SHA-512(firmware.bin)`. Responses: `200` (ok), `400` (bad upload), `403` (invalid signature).
 
 - `GET /api/v1/metrics` returns a compact JSON metrics payload including heap, uptime, link counts, route counts, and the same `interfaces` health snapshot object used by `/api/v1/status` when `METRICS_ENABLED=1`.
 

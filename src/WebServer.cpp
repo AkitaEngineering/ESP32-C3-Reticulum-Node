@@ -484,12 +484,17 @@ void processHttpClient(WiFiClient &client) {
         if (!hexToBin(signatureHex, sig, 64)) { sendResponse(client, 400, "text/plain", "Bad signature format (expected 128 hex chars)"); return; }
         if (!hexToBin(pubHex, pub, 32)) { sendResponse(client, 400, "text/plain", "Bad public_key format (expected 64 hex chars)"); return; }
 
-        // Stream upload to temporary SPIFFS file
+        // Stream upload to temporary SPIFFS file and hash it incrementally.
+        // The OTA image is larger than available C3 RAM, so the signing
+        // contract is Ed25519 over SHA-512(firmware.bin).
         const char *tmpPath = "/ota_upload.bin";
         File out = SPIFFS.open(tmpPath, FILE_WRITE);
         if (!out) { sendResponse(client, 500, "text/plain", "Failed to open temp file"); return; }
 
+        crypto_sha512_ctx sha512;
+        crypto_sha512_init(&sha512);
         size_t remaining = (size_t)contentLength;
+        size_t totalReceived = 0;
         unsigned long start = millis();
         const unsigned long streamTimeoutMs = 30000; // 30s total
         while (remaining > 0 && (millis() - start) < streamTimeoutMs) {
@@ -497,38 +502,40 @@ void processHttpClient(WiFiClient &client) {
                 uint8_t buf[1024];
                 size_t toRead = client.read(buf, (int)min<size_t>(sizeof(buf), remaining));
                 if (toRead == 0) break;
-                out.write(buf, toRead);
+                size_t written = out.write(buf, toRead);
+                if (written != toRead) {
+                    out.close();
+                    SPIFFS.remove(tmpPath);
+                    sendResponse(client, 500, "text/plain", "Failed to write temp OTA file");
+                    return;
+                }
+                crypto_sha512_update(&sha512, buf, toRead);
                 remaining -= toRead;
+                totalReceived += toRead;
             }
             delay(1);
         }
         out.flush(); out.close();
         if (remaining != 0) { sendResponse(client, 400, "text/plain", "Incomplete upload"); SPIFFS.remove(tmpPath); return; }
+        uint8_t firmwareDigest[64];
+        crypto_sha512_final(&sha512, firmwareDigest);
 
-        // Size safety: avoid loading huge files into RAM for verification
         File szFile = SPIFFS.open(tmpPath, FILE_READ);
         size_t fsize = szFile ? szFile.size() : 0;
         if (szFile) szFile.close();
-        const size_t MAX_OTA_VERIFY_SIZE = 2 * 1024 * 1024; // 2 MB
-        if (fsize == 0 || fsize != (size_t)contentLength) { sendResponse(client, 400, "text/plain", "Upload size mismatch"); SPIFFS.remove(tmpPath); return; }
-        if (fsize > MAX_OTA_VERIFY_SIZE) { sendResponse(client, 400, "text/plain", "OTA image too large to verify"); SPIFFS.remove(tmpPath); return; }
+        if (fsize == 0 || fsize != (size_t)contentLength || fsize != totalReceived) {
+            sendResponse(client, 400, "text/plain", "Upload size mismatch");
+            SPIFFS.remove(tmpPath);
+            return;
+        }
 
-        // Read file into RAM for signature verification (bounded by MAX_OTA_VERIFY_SIZE)
-        File vf = SPIFFS.open(tmpPath, FILE_READ);
-        if (!vf) { sendResponse(client, 500, "text/plain", "Failed to open temp file for verify"); SPIFFS.remove(tmpPath); return; }
-        size_t len = vf.size();
-        uint8_t *buf = (uint8_t*)malloc(len);
-        if (!buf) { vf.close(); sendResponse(client, 500, "text/plain", "Out of memory"); SPIFFS.remove(tmpPath); return; }
-        vf.read(buf, len);
-        vf.close();
-
-        int ok = crypto_ed25519_check(sig, pub, buf, len);
-        if (ok != 0) { free(buf); SPIFFS.remove(tmpPath); sendResponse(client, 403, "text/plain", "Invalid signature"); return; }
+        int ok = crypto_ed25519_check(sig, pub, firmwareDigest, sizeof(firmwareDigest));
+        if (ok != 0) { SPIFFS.remove(tmpPath); sendResponse(client, 403, "text/plain", "Invalid signature"); return; }
 
         // Apply OTA from temp file
         File fin = SPIFFS.open(tmpPath, FILE_READ);
-        if (!fin) { free(buf); SPIFFS.remove(tmpPath); sendResponse(client, 500, "text/plain", "Failed to open temp file for OTA"); return; }
-        if (!Update.begin((size_t)fsize)) { fin.close(); free(buf); SPIFFS.remove(tmpPath); sendResponse(client, 500, "text/plain", "OTA begin failed"); return; }
+        if (!fin) { SPIFFS.remove(tmpPath); sendResponse(client, 500, "text/plain", "Failed to open temp file for OTA"); return; }
+        if (!Update.begin((size_t)fsize)) { fin.close(); SPIFFS.remove(tmpPath); sendResponse(client, 500, "text/plain", "OTA begin failed"); return; }
         const size_t chunk = 1024;
         uint8_t wbuf[chunk];
         size_t totalWritten = 0;
@@ -536,10 +543,10 @@ void processHttpClient(WiFiClient &client) {
             size_t r = fin.read(wbuf, chunk);
             if (r == 0) break;
             size_t written = Update.write(wbuf, r);
-            if (written != r) { fin.close(); free(buf); SPIFFS.remove(tmpPath); sendResponse(client, 500, "text/plain", "Write failed"); return; }
+            if (written != r) { fin.close(); SPIFFS.remove(tmpPath); sendResponse(client, 500, "text/plain", "Write failed"); return; }
             totalWritten += written;
         }
-        fin.close(); free(buf);
+        fin.close();
         if (!Update.end(true)) { SPIFFS.remove(tmpPath); sendResponse(client, 500, "text/plain", "OTA finalize failed"); return; }
         SPIFFS.remove(tmpPath);
         // Persist config before reboot to avoid losing packet counter/address

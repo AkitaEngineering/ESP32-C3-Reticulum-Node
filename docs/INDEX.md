@@ -36,6 +36,7 @@ This document serves as the master index for all technical documentation related
 - **docs/ROADMAP.md**: Project roadmap and planned enhancements
 - **docs/API.md**: Web UI / REST API specification and endpoints
 - **docs/COMMERCIALIZATION_STRATEGY.md**: Product definition, target market, monetization, and commercialization-oriented engineering priorities
+- **docs/PRODUCTION_READINESS.md**: Release gates, manufacturing workflow, provisioning, OTA signing, and pilot readiness checklist
 
 ---
 
@@ -99,12 +100,18 @@ Feature Documentation
     └── Winlink Integration
 
 Strategy Documentation
-└── COMMERCIALIZATION_STRATEGY.md
+├── COMMERCIALIZATION_STRATEGY.md
     ├── Product Thesis
     ├── Beachhead Market
     ├── Commercial Offer
     ├── Engineering Priorities
     └── Go-To-Market Sequence
+└── PRODUCTION_READINESS.md
+    ├── Release Gates
+    ├── Manufacturing Workflow
+    ├── Provisioning
+    ├── Pilot Readiness
+    └── Control Plane Requirements
 ```
 
 ---

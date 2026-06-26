@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Upload a signed firmware binary to the device OTA endpoint
+# Upload a signed firmware binary to the device OTA endpoint.
+# signature.hex must be Ed25519(SHA-512(firmware.bin)); use sign_firmware.sh.
 # Usage: ./ota_upload.sh <device-ip> <port> <token> <firmware.bin> <signature.hex>
 
 set -euo pipefail
