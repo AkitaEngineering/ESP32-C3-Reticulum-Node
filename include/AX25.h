@@ -34,18 +34,21 @@ public:
     
     // AX.25 Address Structure
     struct Address {
-        char callsign[6];         // 6-character callsign (padded with spaces)
+        char callsign[7];         // 6-character callsign plus terminator
         uint8_t ssid;             // SSID (0-15)
         bool command;             // Command/Response bit
         bool hasBeenRepeated;     // Has Been Repeated bit
         
         Address() : ssid(0), command(false), hasBeenRepeated(false) {
             memset(callsign, ' ', 6);
+            callsign[6] = '\0';
         }
         
-        Address(const char* call, uint8_t ssid_val = 0) : ssid(ssid_val), command(false), hasBeenRepeated(false) {
+        explicit Address(const char* call, uint8_t ssid_val = 0) : ssid(ssid_val & 0x0F), command(false), hasBeenRepeated(false) {
             memset(callsign, ' ', 6);
-            size_t len = strlen(call);
+            callsign[6] = '\0';
+            if (!call) return;
+            size_t len = strnlen(call, 6);
             if (len > 6) len = 6;
             memcpy(callsign, call, len);
         }
@@ -68,7 +71,8 @@ public:
     static void encodeAddress(const Address& addr, std::vector<uint8_t>& output, bool isLast = false);
     
     // Decode AX.25 address from bytes
-    static bool decodeAddress(const uint8_t* data, size_t& offset, Address& addr);
+    static bool decodeAddress(const uint8_t* data, size_t len, size_t& offset,
+                              Address& addr, bool& moreAddresses);
     
     // Encode complete AX.25 frame
     static bool encodeFrame(const Frame& frame, std::vector<uint8_t>& output);

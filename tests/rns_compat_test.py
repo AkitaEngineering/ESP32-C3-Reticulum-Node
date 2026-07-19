@@ -25,6 +25,9 @@ Usage:
 import sys
 import struct
 import hashlib
+import shutil
+import tempfile
+from pathlib import Path
 
 try:
     import RNS
@@ -37,6 +40,26 @@ except ImportError:
 
 # Global reticulum instance (can only be created once per process)
 _reticulum = None
+_reticulum_config_dir = None
+
+
+def ensure_reticulum():
+    """Start an isolated, interface-free RNS instance for packet packing."""
+    global _reticulum, _reticulum_config_dir
+    if _reticulum is None:
+        _reticulum_config_dir = tempfile.mkdtemp(prefix="rns-compat-")
+        config = """[reticulum]
+  enable_transport = No
+  share_instance = No
+
+[logging]
+  loglevel = 1
+
+[interfaces]
+"""
+        Path(_reticulum_config_dir, "config").write_text(config, encoding="utf-8")
+        _reticulum = RNS.Reticulum(configdir=_reticulum_config_dir)
+    return _reticulum
 
 
 def test_constants():
@@ -145,9 +168,7 @@ def test_packet_wire_format():
     """Verify the wire format of a PLAIN DATA packet."""
     print("\n=== Packet Wire Format ===")
 
-    global _reticulum
-    if _reticulum is None:
-        _reticulum = RNS.Reticulum(configdir="/tmp/rns_compat_test")
+    ensure_reticulum()
 
     dest = Destination(None, Destination.IN, Destination.PLAIN, "esp32", "node")
     test_data = b"Hello ESP32"
@@ -207,9 +228,7 @@ def test_announce_structure():
     """Document the announce packet structure for reference."""
     print("\n=== Announce Packet Structure ===")
 
-    global _reticulum
-    if _reticulum is None:
-        _reticulum = RNS.Reticulum(configdir="/tmp/rns_compat_test")
+    ensure_reticulum()
 
     identity = Identity()
     dest = Destination(identity, Destination.IN, Destination.SINGLE, "compat", "test")
@@ -355,10 +374,13 @@ def main():
     print("=" * 60)
 
     # Clean up reticulum
-    global _reticulum
+    global _reticulum, _reticulum_config_dir
     if _reticulum is not None:
         _reticulum.exit_handler()
         _reticulum = None
+    if _reticulum_config_dir is not None:
+        shutil.rmtree(_reticulum_config_dir, ignore_errors=True)
+        _reticulum_config_dir = None
     print("""
   1. ANNOUNCE FORMAT: VERIFIED. This script confirms the firmware uses the
       reference announce layout [PUB_KEY 64][NAME_HASH 10][RANDOM_HASH 10][SIG 64].

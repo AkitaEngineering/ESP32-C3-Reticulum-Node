@@ -12,6 +12,7 @@
 #include <Update.h>
 #include <monocypher.h>
 #include <optional/monocypher-ed25519.h>
+#include <cctype>
 
 extern ReticulumNode reticulumNode;
 
@@ -24,7 +25,58 @@ extern ReticulumNode reticulumNode;
 #endif
 
 static WiFiServer _server(WEBSERVER_PORT);
+static bool _serverStarted = false;
 static const char* CONFIG_PATH = "/config.json";
+static const char* CONFIG_NEW_PATH = "/config.new";
+static const char* CONFIG_BACKUP_PATH = "/config.backup";
+static constexpr bool ALLOW_NETWORK_BOOTSTRAP = !PRODUCTION_BUILD;
+
+static bool hexToBin(const String &hex, uint8_t *out, size_t expectedLen) {
+    if ((size_t)hex.length() != expectedLen * 2) return false;
+    for (size_t i = 0; i < expectedLen; ++i) {
+        const char h = hex.charAt(2 * i);
+        const char l = hex.charAt(2 * i + 1);
+        auto value = [](char c) -> int {
+            if (c >= '0' && c <= '9') return c - '0';
+            if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+            if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+            return -1;
+        };
+        const int hi = value(h);
+        const int lo = value(l);
+        if (hi < 0 || lo < 0) return false;
+        out[i] = (uint8_t)((hi << 4) | lo);
+    }
+    return true;
+}
+
+static bool parseSemanticVersion(const String &version, int parts[3]) {
+    int start = 0;
+    for (int i = 0; i < 3; ++i) {
+        const int end = (i < 2) ? version.indexOf('.', start) : version.length();
+        if (end <= start) return false;
+        long value = 0;
+        for (int pos = start; pos < end; ++pos) {
+            const char c = version.charAt(pos);
+            if (c < '0' || c > '9') return false;
+            value = value * 10 + (c - '0');
+            if (value > 65535) return false;
+        }
+        parts[i] = static_cast<int>(value);
+        start = end + 1;
+    }
+    return start == version.length() + 1;
+}
+
+static bool isNewerFirmwareVersion(const String &candidate) {
+    int incoming[3] = {0, 0, 0};
+    int current[3] = {0, 0, 0};
+    if (!parseSemanticVersion(candidate, incoming) || !parseSemanticVersion(String(FIRMWARE_VERSION), current)) return false;
+    for (int i = 0; i < 3; ++i) {
+        if (incoming[i] != current[i]) return incoming[i] > current[i];
+    }
+    return false;
+}
 
 static void sendResponse(WiFiClient &client, int code, const char *contentType, const String &body, const String &extraHeaders = String()) {
     const char *statusText = "OK";
@@ -32,9 +84,14 @@ static void sendResponse(WiFiClient &client, int code, const char *contentType, 
         case 200: statusText = "OK"; break;
         case 201: statusText = "Created"; break;
         case 400: statusText = "Bad Request"; break;
+        case 405: statusText = "Method Not Allowed"; break;
+        case 408: statusText = "Request Timeout"; break;
+        case 411: statusText = "Length Required"; break;
+        case 413: statusText = "Payload Too Large"; break;
         case 401: statusText = "Unauthorized"; break;
         case 403: statusText = "Forbidden"; break;
         case 404: statusText = "Not Found"; break;
+        case 409: statusText = "Conflict"; break;
         case 500: statusText = "Internal Server Error"; break;
         default: statusText = "OK"; break;
     }
@@ -44,6 +101,8 @@ static void sendResponse(WiFiClient &client, int code, const char *contentType, 
     client.print(" "); client.print(statusText); client.print("\r\n");
     client.print("Content-Type: "); client.print(contentType); client.print("\r\n");
     client.print("Content-Length: "); client.print(body.length()); client.print("\r\n");
+    client.print("Cache-Control: no-store\r\n");
+    client.print("X-Content-Type-Options: nosniff\r\n");
     if (extraHeaders.length() > 0) {
         client.print(extraHeaders);
     }
@@ -57,6 +116,8 @@ static void sendUnauthorized(WiFiClient &client) {
     client.print("WWW-Authenticate: Bearer realm=\"Reticulum\"\r\n");
     client.print("Content-Type: text/plain\r\n");
     client.print("Content-Length: "); client.print(body.length()); client.print("\r\n");
+    client.print("Cache-Control: no-store\r\n");
+    client.print("X-Content-Type-Options: nosniff\r\n");
     client.print("Connection: close\r\n\r\n");
     client.print(body);
 }
@@ -92,7 +153,7 @@ static String getSavedApiToken() {
 static bool isBootstrapMode() {
 #if WEBSERVER_AUTH_ENABLED
     #if JSON_CONFIG_ENABLED
-    return !hasSavedConfig();
+    return ALLOW_NETWORK_BOOTSTRAP && !hasSavedConfig();
     #else
     return false;
     #endif
@@ -104,6 +165,12 @@ static bool isBootstrapMode() {
 static bool getRestartRequiredReason(String &reason) {
     if (strcmp(reticulumNode.getRuntimeAppName(), getConfiguredAppName()) != 0) {
         reason = "rns_app_name_changed";
+        return true;
+    }
+
+    const char* configuredSsid = getConfiguredWiFiSsid();
+    if (strlen(configuredSsid) > 0 && (WiFi.status() != WL_CONNECTED || WiFi.SSID() != configuredSsid)) {
+        reason = "wifi_config_changed";
         return true;
     }
 
@@ -239,7 +306,8 @@ static bool checkAuth(const String &authHeader, bool allowBootstrap = false) {
 
     String token = authHeader;
     token.trim();
-    if (token.startsWith("Bearer ")) token = token.substring(7);
+    if (!token.startsWith("Bearer ")) return false;
+    token = token.substring(7);
     token.trim();
 
     // Constant-time comparison to prevent timing attacks
@@ -254,19 +322,84 @@ static bool checkAuth(const String &authHeader, bool allowBootstrap = false) {
 #endif
 }
 
-static String readLine(WiFiClient &c, unsigned long timeout=1000) {
+static String readLine(WiFiClient &c, unsigned long timeout=1000, size_t maxLength=1024) {
     String s;
     unsigned long start = millis();
     while (millis() - start < timeout) {
         if (!c.connected()) break;
         while (c.available()) {
             char ch = c.read();
+            if (s.length() >= maxLength) return String();
             s += ch;
             if (s.endsWith("\r\n")) return s;
         }
         delay(1);
     }
     return s;
+}
+
+static bool parseContentLength(String value, int &parsed) {
+    value.trim();
+    if (value.length() == 0) return false;
+    uint32_t result = 0;
+    for (size_t i = 0; i < value.length(); ++i) {
+        const char c = value.charAt(i);
+        if (c < '0' || c > '9') return false;
+        result = result * 10u + static_cast<uint32_t>(c - '0');
+        if (result > 0x7FFFFFFFu) return false;
+    }
+    parsed = static_cast<int>(result);
+    return true;
+}
+
+static bool isSafeConfigText(const char* value, size_t minLength, size_t maxLength) {
+    if (!value) return false;
+    const size_t length = strlen(value);
+    if (length < minLength || length > maxLength) return false;
+    for (size_t i = 0; i < length; ++i) {
+        const uint8_t c = static_cast<uint8_t>(value[i]);
+        if (c < 0x20 || c == 0x7F) return false;
+    }
+    return true;
+}
+
+static bool isValidWifiPassword(const char* password) {
+    if (!password) return false;
+    const size_t length = strlen(password);
+    if (length == 0) return true; // Explicitly configured open network.
+    if (length == 64) {
+        for (size_t i = 0; i < length; ++i) {
+            if (!isxdigit(static_cast<unsigned char>(password[i]))) return false;
+        }
+        return true;
+    }
+    return isSafeConfigText(password, 8, 63);
+}
+
+static bool isAllZero(const uint8_t* value, size_t length) {
+    uint8_t combined = 0;
+    for (size_t i = 0; i < length; ++i) combined |= value[i];
+    return combined == 0;
+}
+
+static bool validateRoutePriorities(JsonVariant routingVariant) {
+    if (routingVariant.isNull()) return true;
+    if (!routingVariant.is<JsonObject>()) return false;
+    JsonVariant prioritiesVariant = routingVariant["interface_priority"];
+    if (prioritiesVariant.isNull()) return true;
+    if (!prioritiesVariant.is<JsonObject>()) return false;
+
+    static const char* names[] = {
+        "wifi_udp", "esp_now", "lora", "ham_modem", "serial_port", "bluetooth", "ipfs"
+    };
+    JsonObject priorities = prioritiesVariant.as<JsonObject>();
+    for (const char* name : names) {
+        JsonVariant value = priorities[name];
+        if (!value.isNull() && (!value.is<int>() || value.as<int>() < -1000 || value.as<int>() > 1000)) {
+            return false;
+        }
+    }
+    return true;
 }
 
 void processHttpClient(WiFiClient &client) {
@@ -276,36 +409,88 @@ void processHttpClient(WiFiClient &client) {
     // Example: "GET /api/v1/status HTTP/1.1\r\n"
     int firstSpace = req.indexOf(' ');
     int secondSpace = req.indexOf(' ', firstSpace + 1);
-    if (firstSpace < 0 || secondSpace < 0) return;
+    if (firstSpace <= 0 || secondSpace <= firstSpace + 1) {
+        sendResponse(client, 400, "text/plain", "Malformed request line");
+        return;
+    }
     String method = req.substring(0, firstSpace);
     String path = req.substring(firstSpace + 1, secondSpace);
+    String protocol = req.substring(secondSpace + 1);
+    protocol.trim();
+    if ((method != "GET" && method != "POST") || path.length() == 0 || path.charAt(0) != '/' ||
+        (protocol != "HTTP/1.1" && protocol != "HTTP/1.0")) {
+        sendResponse(client, method != "GET" && method != "POST" ? 405 : 400,
+                     "text/plain", "Unsupported or malformed request");
+        return;
+    }
 
     // Read headers (case-insensitive comparison)
     int contentLength = 0;
+    bool hasContentLength = false;
+    bool hasAuthorization = false;
+    bool hasSignature = false;
+    bool hasFirmwareVersion = false;
     String authHeader;
     String signatureHex;
+    String firmwareVersion;
+    size_t totalHeaderBytes = 0;
     while (true) {
         String line = readLine(client);
+        totalHeaderBytes += line.length();
+        if (line.length() == 0 || totalHeaderBytes > 8192) {
+            sendResponse(client, 400, "text/plain", "Invalid or oversized headers");
+            return;
+        }
         if (line.length() <= 2) break; // \r\n
+        if (line.charAt(0) == ' ' || line.charAt(0) == '\t' || line.indexOf(':') <= 0) {
+            sendResponse(client, 400, "text/plain", "Malformed header");
+            return;
+        }
         line.trim();
         String lower = line;
         lower.toLowerCase();
         if (lower.startsWith("content-length:")) {
-            contentLength = line.substring(15).toInt();
+            int parsedLength = 0;
+            if (hasContentLength || !parseContentLength(line.substring(15), parsedLength)) {
+                sendResponse(client, 400, "text/plain", "Invalid Content-Length");
+                return;
+            }
+            contentLength = parsedLength;
+            hasContentLength = true;
+        } else if (lower.startsWith("transfer-encoding:")) {
+            sendResponse(client, 400, "text/plain", "Transfer-Encoding is not supported");
+            return;
         } else if (lower.startsWith("authorization:")) {
+            if (hasAuthorization) { sendResponse(client, 400, "text/plain", "Duplicate Authorization header"); return; }
             authHeader = line.substring(14);
             authHeader.trim();
+            hasAuthorization = true;
         } else if (lower.startsWith("x-signature-ed25519:")) {
+            if (hasSignature) { sendResponse(client, 400, "text/plain", "Duplicate signature header"); return; }
             signatureHex = line.substring(20);
             signatureHex.trim();
+            hasSignature = true;
+        } else if (lower.startsWith("x-firmware-version:")) {
+            if (hasFirmwareVersion) { sendResponse(client, 400, "text/plain", "Duplicate firmware version header"); return; }
+            firmwareVersion = line.substring(19);
+            firmwareVersion.trim();
+            hasFirmwareVersion = true;
         }
     }
 
     // Enforce body size limit to prevent memory exhaustion
     const int MAX_BODY_SIZE = 4096;
     bool isOtaUpload = (method == "POST" && path == "/api/v1/ota");
+    if (method == "POST" && !hasContentLength) {
+        sendResponse(client, 411, "text/plain", "Content-Length required");
+        return;
+    }
+    if (method == "GET" && contentLength != 0) {
+        sendResponse(client, 400, "text/plain", "GET requests cannot contain a body");
+        return;
+    }
     if (!isOtaUpload && contentLength > MAX_BODY_SIZE) {
-        sendResponse(client, 400, "text/plain", "Body too large");
+        sendResponse(client, 413, "text/plain", "Body too large");
         return;
     }
 
@@ -319,11 +504,15 @@ void processHttpClient(WiFiClient &client) {
             }
             delay(1);
         }
+        if (static_cast<int>(body.length()) != contentLength) {
+            sendResponse(client, 408, "text/plain", "Incomplete request body");
+            return;
+        }
     }
 
     // Route handling
     if (method == "GET" && path == "/api/v1/status") {
-        if (!checkAuth(authHeader, true)) { sendUnauthorized(client); return; }
+        if (!checkAuth(authHeader, ALLOW_NETWORK_BOOTSTRAP)) { sendUnauthorized(client); return; }
         reloadRuntimeConfigCache();
         DynamicJsonDocument doc(3072);
         String restartReason;
@@ -334,6 +523,7 @@ void processHttpClient(WiFiClient &client) {
         bool wifiConnected = WiFi.status() == WL_CONNECTED;
         doc["node_name"] = getConfiguredNodeName();
         doc["device_id"] = getDefaultDeviceName();
+        doc["firmware_version"] = FIRMWARE_VERSION;
         doc["rns_app_name"] = getConfiguredAppName();
         doc["uptime_s"] = millis() / 1000;
         doc["free_heap"] = ESP.getFreeHeap();
@@ -379,8 +569,8 @@ void processHttpClient(WiFiClient &client) {
         sendResponse(client, 200, "application/json", out);
 
     } else if (method == "GET" && path == "/api/v1/config") {
-        if (!checkAuth(authHeader, true)) { sendUnauthorized(client); return; }
-        DynamicJsonDocument doc(1024);
+        if (!checkAuth(authHeader, ALLOW_NETWORK_BOOTSTRAP)) { sendUnauthorized(client); return; }
+        DynamicJsonDocument doc(4096);
         if (SPIFFS.exists(CONFIG_PATH)) {
             File f = SPIFFS.open(CONFIG_PATH, FILE_READ);
             if (!f) { sendResponse(client, 500, "text/plain", "Failed to open config file"); return; }
@@ -395,6 +585,18 @@ void processHttpClient(WiFiClient &client) {
             if (strlen(appName) == 0) {
                 doc["rns_app_name"] = getConfiguredAppName();
             }
+            JsonObject wifi = doc["wifi"];
+            if (!wifi.isNull()) {
+                const char* savedPassword = wifi["password"] | "";
+                wifi["password_configured"] = strlen(savedPassword) > 0;
+                wifi["password"] = "";
+            }
+            JsonObject api = doc["api"];
+            if (!api.isNull()) {
+                const char* savedToken = api["token"] | "";
+                api["token_configured"] = !isPlaceholderApiToken(String(savedToken));
+                api["token"] = "";
+            }
         } else {
             doc["node_name"] = getConfiguredNodeName();
             doc["rns_app_name"] = getConfiguredAppName();
@@ -406,15 +608,59 @@ void processHttpClient(WiFiClient &client) {
         sendResponse(client, 200, "application/json", out);
 
     } else if (method == "POST" && path == "/api/v1/config") {
-        if (!checkAuth(authHeader, true)) { sendUnauthorized(client); return; }
-        DynamicJsonDocument doc(2048);
+        if (!checkAuth(authHeader, ALLOW_NETWORK_BOOTSTRAP)) { sendUnauthorized(client); return; }
+        DynamicJsonDocument doc(4096);
         DeserializationError err = deserializeJson(doc, body);
         if (err) { sendResponse(client, 400, "text/plain", "Invalid JSON"); return; }
 #if JSON_CONFIG_ENABLED
-        File f = SPIFFS.open(CONFIG_PATH, FILE_WRITE);
+        if (!doc.is<JsonObject>()) { sendResponse(client, 400, "text/plain", "Config must be a JSON object"); return; }
+        const char* nodeName = doc["node_name"] | "";
+        const char* appName = doc["rns_app_name"] | "";
+        JsonObject wifi = doc["wifi"];
+        JsonObject api = doc["api"];
+        const char* ssid = wifi["ssid"] | "";
+        const char* password = wifi["password"] | "";
+        const char* token = api["token"] | "";
+        const bool authEnabled = api["auth_enabled"] | false;
+        String publicKey = api["public_key"] | "";
+        uint8_t publicKeyBytes[32];
+        if (!isSafeConfigText(nodeName, 1, 47) || !isSafeConfigText(appName, 1, 63) ||
+            strlen(ssid) > 32 || !isValidWifiPassword(password) || !isSafeConfigText(token, 32, 128) ||
+            !validateRoutePriorities(doc["routing"]) ||
+            !authEnabled || isPlaceholderApiToken(String(token)) ||
+            !hexToBin(publicKey, publicKeyBytes, sizeof(publicKeyBytes)) ||
+            isAllZero(publicKeyBytes, sizeof(publicKeyBytes))) {
+            sendResponse(client, 400, "text/plain", "Invalid production config");
+            return;
+        }
+#if PRODUCTION_BUILD
+        if (strlen(ssid) == 0) { sendResponse(client, 400, "text/plain", "WiFi SSID is required"); return; }
+#endif
+        SPIFFS.remove(CONFIG_NEW_PATH);
+        File f = SPIFFS.open(CONFIG_NEW_PATH, FILE_WRITE);
         if (!f) { sendResponse(client, 500, "text/plain", "Failed to open config for write"); return; }
-        if (serializeJson(doc, f) == 0) { f.close(); sendResponse(client, 500, "text/plain", "Failed to write config"); return; }
+        if (serializeJson(doc, f) == 0) { f.close(); SPIFFS.remove(CONFIG_NEW_PATH); sendResponse(client, 500, "text/plain", "Failed to write config"); return; }
+        f.flush();
         f.close();
+        File verifyFile = SPIFFS.open(CONFIG_NEW_PATH, FILE_READ);
+        DynamicJsonDocument verifyDoc(4096);
+        const bool verified = verifyFile && deserializeJson(verifyDoc, verifyFile) == DeserializationError::Ok;
+        if (verifyFile) verifyFile.close();
+        if (!verified) { SPIFFS.remove(CONFIG_NEW_PATH); sendResponse(client, 500, "text/plain", "Config verification failed"); return; }
+        SPIFFS.remove(CONFIG_BACKUP_PATH);
+        const bool hadConfig = SPIFFS.exists(CONFIG_PATH);
+        if (hadConfig && !SPIFFS.rename(CONFIG_PATH, CONFIG_BACKUP_PATH)) {
+            SPIFFS.remove(CONFIG_NEW_PATH);
+            sendResponse(client, 500, "text/plain", "Config backup failed");
+            return;
+        }
+        if (!SPIFFS.rename(CONFIG_NEW_PATH, CONFIG_PATH)) {
+            if (hadConfig) SPIFFS.rename(CONFIG_BACKUP_PATH, CONFIG_PATH);
+            SPIFFS.remove(CONFIG_NEW_PATH);
+            sendResponse(client, 500, "text/plain", "Config commit failed");
+            return;
+        }
+        SPIFFS.remove(CONFIG_BACKUP_PATH);
 #endif
         // Apply WiFi credentials immediately if provided
         if (doc.containsKey("wifi")) {
@@ -434,7 +680,11 @@ void processHttpClient(WiFiClient &client) {
             extraHeaders += restartReason;
             extraHeaders += "\r\n";
         }
-        String out; serializeJson(doc, out);
+        DynamicJsonDocument responseDoc(256);
+        responseDoc["saved"] = true;
+        responseDoc["restart_required"] = restartRequired;
+        if (restartRequired) responseDoc["restart_reason"] = restartReason;
+        String out; serializeJson(responseDoc, out);
         sendResponse(client, 200, "application/json", out, extraHeaders);
 
     } else if (method == "POST" && path == "/api/v1/config/save") {
@@ -451,10 +701,17 @@ void processHttpClient(WiFiClient &client) {
 #if OTA_ENABLED
         if (contentLength == 0) { sendResponse(client, 400, "text/plain", "Empty body"); return; }
         if (signatureHex.length() == 0) { sendResponse(client, 400, "text/plain", "Missing X-Signature-Ed25519 header"); return; }
+        if (!isNewerFirmwareVersion(firmwareVersion)) { sendResponse(client, 409, "text/plain", "Firmware version must be a newer semantic version"); return; }
+        const char *tmpPath = "/ota_upload.bin";
+        SPIFFS.remove(tmpPath);
+        const size_t filesystemReserve = 65536;
+        const size_t filesystemAvailable = SPIFFS.totalBytes() > SPIFFS.usedBytes() + filesystemReserve
+            ? SPIFFS.totalBytes() - SPIFFS.usedBytes() - filesystemReserve : 0;
+        if ((size_t)contentLength > filesystemAvailable) { sendResponse(client, 400, "text/plain", "OTA image exceeds staging capacity"); return; }
 
         String pubHex;
 #if JSON_CONFIG_ENABLED
-        DynamicJsonDocument cdoc(2048);
+        DynamicJsonDocument cdoc(4096);
         if (SPIFFS.exists(CONFIG_PATH)) {
             File cf = SPIFFS.open(CONFIG_PATH, FILE_READ);
             if (cf) {
@@ -467,37 +724,33 @@ void processHttpClient(WiFiClient &client) {
 #endif
         if (pubHex.length() == 0) { sendResponse(client, 400, "text/plain", "No public key configured"); return; }
 
-        auto hexToBin = [](const String &hex, uint8_t *out, size_t expectedLen)->bool {
-            if ((size_t)hex.length() != expectedLen*2) return false;
-            for (size_t i=0;i<expectedLen;i++) {
-                char h = hex.charAt(2*i);
-                char l = hex.charAt(2*i+1);
-                auto val = [](char c)->int { if (c >= '0' && c <= '9') return c - '0'; if (c >= 'a' && c <= 'f') return c - 'a' + 10; if (c >= 'A' && c <= 'F') return c - 'A' + 10; return -1; };
-                int hi = val(h); int lo = val(l);
-                if (hi < 0 || lo < 0) return false;
-                out[i] = (uint8_t)((hi << 4) | lo);
-            }
-            return true;
-        };
-
         uint8_t sig[64]; uint8_t pub[32];
         if (!hexToBin(signatureHex, sig, 64)) { sendResponse(client, 400, "text/plain", "Bad signature format (expected 128 hex chars)"); return; }
         if (!hexToBin(pubHex, pub, 32)) { sendResponse(client, 400, "text/plain", "Bad public_key format (expected 64 hex chars)"); return; }
 
         // Stream upload to temporary SPIFFS file and hash it incrementally.
         // The OTA image is larger than available C3 RAM, so the signing
-        // contract is Ed25519 over SHA-512(firmware.bin).
-        const char *tmpPath = "/ota_upload.bin";
+        // contract is a domain- and version-bound Ed25519 signature over the
+        // SHA-512 digest assembled below.
         File out = SPIFFS.open(tmpPath, FILE_WRITE);
         if (!out) { sendResponse(client, 500, "text/plain", "Failed to open temp file"); return; }
 
         crypto_sha512_ctx sha512;
         crypto_sha512_init(&sha512);
+        static const uint8_t otaDomain[] = {'R','N','S','-','O','T','A','-','V','1',0};
+        crypto_sha512_update(&sha512, otaDomain, sizeof(otaDomain));
+        crypto_sha512_update(&sha512, reinterpret_cast<const uint8_t*>(firmwareVersion.c_str()), firmwareVersion.length());
+        const uint8_t separator = 0;
+        crypto_sha512_update(&sha512, &separator, 1);
         size_t remaining = (size_t)contentLength;
         size_t totalReceived = 0;
-        unsigned long start = millis();
-        const unsigned long streamTimeoutMs = 30000; // 30s total
-        while (remaining > 0 && (millis() - start) < streamTimeoutMs) {
+        const unsigned long transferStart = millis();
+        unsigned long lastProgress = transferStart;
+        const unsigned long inactivityTimeoutMs = 10000;
+        const unsigned long totalTimeoutMs = 300000;
+        while (remaining > 0 && client.connected() &&
+               (millis() - lastProgress) < inactivityTimeoutMs &&
+               (millis() - transferStart) < totalTimeoutMs) {
             while (client.available() && remaining > 0) {
                 uint8_t buf[1024];
                 size_t toRead = client.read(buf, (int)min<size_t>(sizeof(buf), remaining));
@@ -512,11 +765,12 @@ void processHttpClient(WiFiClient &client) {
                 crypto_sha512_update(&sha512, buf, toRead);
                 remaining -= toRead;
                 totalReceived += toRead;
+                lastProgress = millis();
             }
             delay(1);
         }
         out.flush(); out.close();
-        if (remaining != 0) { sendResponse(client, 400, "text/plain", "Incomplete upload"); SPIFFS.remove(tmpPath); return; }
+        if (remaining != 0) { sendResponse(client, 408, "text/plain", "Incomplete or timed-out upload"); SPIFFS.remove(tmpPath); return; }
         uint8_t firmwareDigest[64];
         crypto_sha512_final(&sha512, firmwareDigest);
 
@@ -543,11 +797,12 @@ void processHttpClient(WiFiClient &client) {
             size_t r = fin.read(wbuf, chunk);
             if (r == 0) break;
             size_t written = Update.write(wbuf, r);
-            if (written != r) { fin.close(); SPIFFS.remove(tmpPath); sendResponse(client, 500, "text/plain", "Write failed"); return; }
+            if (written != r) { Update.abort(); fin.close(); SPIFFS.remove(tmpPath); sendResponse(client, 500, "text/plain", "Write failed"); return; }
             totalWritten += written;
         }
         fin.close();
-        if (!Update.end(true)) { SPIFFS.remove(tmpPath); sendResponse(client, 500, "text/plain", "OTA finalize failed"); return; }
+        if (totalWritten != fsize) { Update.abort(); SPIFFS.remove(tmpPath); sendResponse(client, 500, "text/plain", "OTA write size mismatch"); return; }
+        if (!Update.end(false)) { SPIFFS.remove(tmpPath); sendResponse(client, 500, "text/plain", "OTA finalize failed"); return; }
         SPIFFS.remove(tmpPath);
         // Persist config before reboot to avoid losing packet counter/address
         reticulumNode.saveConfigNow();
@@ -572,6 +827,7 @@ void processHttpClient(WiFiClient &client) {
         RoutingTable &routingTable = reticulumNode.getRoutingTable();
         InterfaceManager &interfaceManager = reticulumNode.getInterfaceManager();
         doc["heap_free"] = ESP.getFreeHeap();
+        doc["firmware_version"] = FIRMWARE_VERSION;
         doc["uptime_s"] = millis() / 1000;
         doc["active_links"] = (int)reticulumNode.getLinkManager().getActiveLinkCount();
         doc["route_count"] = (int)routingTable.getRouteCount();
@@ -589,12 +845,21 @@ void processHttpClient(WiFiClient &client) {
 }
 
 void WebServerManager::begin() {
-    if (!SPIFFS.begin(true)) DebugSerial.println("WebServer: SPIFFS mount failed"); else DebugSerial.println("WebServer: SPIFFS mounted");
+    if (!SPIFFS.begin(false)) {
+        DebugSerial.println("WebServer: SPIFFS mount failed; server not started");
+        _serverStarted = false;
+        return;
+    }
+    DebugSerial.println("WebServer: SPIFFS mounted");
     _server.begin();
+    _serverStarted = true;
     DebugSerial.print("WebServer: started on port "); DebugSerial.println(WEBSERVER_PORT);
 }
 
+bool WebServerManager::isStarted() { return _serverStarted; }
+
 void WebServerManager::loop() {
+    if (!_serverStarted) return;
     WiFiClient client = _server.accept();
     if (client) {
         if (client.connected()) {
@@ -607,6 +872,7 @@ void WebServerManager::loop() {
 
 bool WebServerManager::loadConfigFromFS(const char* path) {
 #if JSON_CONFIG_ENABLED
+    if (!path || !SPIFFS.begin(false)) return false;
     if (!SPIFFS.exists(path)) return false;
     File f = SPIFFS.open(path, FILE_READ);
     if (!f) return false;
@@ -619,20 +885,11 @@ bool WebServerManager::loadConfigFromFS(const char* path) {
 #endif
 }
 
-bool WebServerManager::saveConfigToFS(const char* path) {
-#if JSON_CONFIG_ENABLED
-    (void)path;
-    return false;
-#else
-    (void)path; return false;
-#endif
-}
-
 #else // WEBSERVER_ENABLED
 
 void WebServerManager::begin() { (void)0; }
+bool WebServerManager::isStarted() { return false; }
 void WebServerManager::loop() { (void)0; }
 bool WebServerManager::loadConfigFromFS(const char* path) { (void)path; return false; }
-bool WebServerManager::saveConfigToFS(const char* path) { (void)path; return false; }
 
 #endif // WEBSERVER_ENABLED

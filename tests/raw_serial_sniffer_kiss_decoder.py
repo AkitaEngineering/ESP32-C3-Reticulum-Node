@@ -97,14 +97,16 @@ def analyze_packet(packet):
     print(f"  CONTEXT: 0x{context:02X}", end="")
     if context == 0x00:
         print(" (NONE)")
-    elif context == 0xA1:
-        print(" (LINK_REQ)")
-    elif context == 0xA3:
-        print(" (LINK_DATA)")
-    elif context == 0xA4:
-        print(" (ACK)")
-    elif context == 0xFE:
+    elif context == 0xB0:
         print(" (LOCAL_CMD)")
+    elif context == 0xFA:
+        print(" (KEEPALIVE)")
+    elif context == 0xFC:
+        print(" (LINKCLOSE)")
+    elif context == 0xFE:
+        print(" (LRRTT)")
+    elif context == 0xFF:
+        print(" (LRPROOF)")
     else:
         print(" (UNKNOWN)")
 

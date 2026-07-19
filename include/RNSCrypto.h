@@ -45,11 +45,13 @@ class RNSCrypto {
 public:
     /**
      * Initialize the identity. Loads keys from EEPROM or generates new ones.
-     * Must be called after EEPROM.begin() with at least EEPROM_SIZE_WITH_IDENTITY bytes.
+     * Opens EEPROM, then loads an existing identity or creates and persists one.
      *
      * @return true if identity is ready (loaded or generated)
      */
     bool begin() {
+        _ready = false;
+        if (!EEPROM.begin(EEPROM_SIZE_WITH_IDENTITY)) return false;
         if (loadIdentity()) {
             derivePublicKeys();
             computeHashes();
@@ -61,7 +63,11 @@ public:
         generateIdentity();
         derivePublicKeys();
         computeHashes();
-        saveIdentity();
+        if (!saveIdentity()) {
+            crypto_wipe(_x25519_private, sizeof(_x25519_private));
+            crypto_wipe(_ed25519_seed, sizeof(_ed25519_seed));
+            return false;
+        }
         _ready = true;
         return true;
     }
@@ -109,7 +115,48 @@ public:
      */
     static bool verify(const uint8_t signature[64], const uint8_t public_key[32],
                        const uint8_t* message, size_t msg_len) {
+        if (!signature || !public_key || (!message && msg_len != 0)) return false;
         return crypto_ed25519_check(signature, public_key, message, msg_len) == 0;
+    }
+
+    /** Validate an identity announce before it is learned or forwarded. */
+    static bool validateAnnouncePayload(const uint8_t destination_hash[16],
+                                        const uint8_t* payload, size_t payload_len,
+                                        bool has_ratchet = false) {
+        static constexpr size_t RATCHET_SIZE = 32;
+        const size_t ratchet_size = has_ratchet ? RATCHET_SIZE : 0;
+        const size_t signature_offset = 64 + 10 + 10 + ratchet_size;
+        const size_t announce_fixed_size = signature_offset + 64;
+        if (!destination_hash || !payload || payload_len < announce_fixed_size) return false;
+
+        const uint8_t* public_key = payload;
+        const uint8_t* name_hash_value = payload + 64;
+        const uint8_t* random_hash = payload + 74;
+        const uint8_t* ratchet = payload + 84;
+        const uint8_t* signature = payload + signature_offset;
+        const uint8_t* app_data = payload + announce_fixed_size;
+        const size_t app_data_len = payload_len - announce_fixed_size;
+
+        uint8_t identity_hash_value[16];
+        uint8_t expected_destination[16];
+        RNSIdentity::identity_hash(public_key, identity_hash_value);
+        RNSIdentity::destination_hash_from_name_hash(
+            name_hash_value, identity_hash_value, expected_destination);
+        if (crypto_verify16(destination_hash, expected_destination) != 0) return false;
+
+        std::vector<uint8_t> signed_data(16 + 64 + 10 + 10 + ratchet_size + app_data_len);
+        size_t offset = 0;
+        memcpy(signed_data.data() + offset, destination_hash, 16); offset += 16;
+        memcpy(signed_data.data() + offset, public_key, 64); offset += 64;
+        memcpy(signed_data.data() + offset, name_hash_value, 10); offset += 10;
+        memcpy(signed_data.data() + offset, random_hash, 10); offset += 10;
+        if (has_ratchet) {
+            memcpy(signed_data.data() + offset, ratchet, RATCHET_SIZE);
+            offset += RATCHET_SIZE;
+        }
+        if (app_data_len != 0) memcpy(signed_data.data() + offset, app_data, app_data_len);
+
+        return verify(signature, public_key + 32, signed_data.data(), signed_data.size());
     }
 
     // --- SINGLE Destination Encryption ---
@@ -135,6 +182,7 @@ public:
         const uint8_t recipient_pub[32],
         const uint8_t recipient_hash[16])
     {
+        if ((!plaintext && len != 0) || !recipient_pub || !recipient_hash) return {};
         // Generate ephemeral X25519 keypair
         uint8_t eph_priv[32], eph_pub[32];
         esp_fill_random(eph_priv, 32);
@@ -144,6 +192,10 @@ public:
         uint8_t shared[32];
         crypto_x25519(shared, eph_priv, recipient_pub);
         crypto_wipe(eph_priv, 32);
+        if (isAllZero(shared, sizeof(shared))) {
+            crypto_wipe(shared, sizeof(shared));
+            return {};
+        }
 
         // HKDF: salt = identity_hash, context = empty
         uint8_t derived[64];
@@ -179,10 +231,13 @@ public:
      *
      * @param ciphertext_token  [ephemeral_pub 32][fernet_token]
      * @param token_len         total token length
-     * @return                  decrypted plaintext, empty on failure
+     * @param plaintext         receives the authenticated plaintext; may be empty
+     * @return                  true when authentication and decryption succeed
      */
-    std::vector<uint8_t> decryptForIdentity(const uint8_t* ciphertext_token, size_t token_len) const {
-        if (token_len <= 32) return {};  // Must have at least ephemeral_pub + minimum fernet
+    bool decryptForIdentity(const uint8_t* ciphertext_token, size_t token_len,
+                            std::vector<uint8_t>& plaintext) const {
+        plaintext.clear();
+        if (!_ready || !ciphertext_token || token_len < 32 + 64) return false;
 
         const uint8_t* peer_pub = ciphertext_token;
         const uint8_t* fernet_data = ciphertext_token + 32;
@@ -191,12 +246,16 @@ public:
         // ECDH: shared = X25519(our_priv, peer_ephemeral_pub)
         uint8_t shared[32];
         crypto_x25519(shared, _x25519_private, peer_pub);
+        if (isAllZero(shared, sizeof(shared))) {
+            crypto_wipe(shared, sizeof(shared));
+            return false;
+        }
 
         // HKDF: salt = our identity_hash, context = empty
         uint8_t derived[64];
         if (!rns_hkdf_sha256(derived, 64, shared, 32, _identity_hash, 16, nullptr, 0)) {
             crypto_wipe(shared, 32);
-            return {};
+            return false;
         }
         crypto_wipe(shared, 32);
 
@@ -205,7 +264,14 @@ public:
         token.init(derived);
         crypto_wipe(derived, 64);
 
-        return token.decrypt(fernet_data, fernet_len);
+        return token.decrypt(fernet_data, fernet_len, plaintext);
+    }
+
+    /** Compatibility wrapper; use the bool overload when empty data is valid. */
+    std::vector<uint8_t> decryptForIdentity(const uint8_t* ciphertext_token, size_t token_len) const {
+        std::vector<uint8_t> plaintext;
+        (void)decryptForIdentity(ciphertext_token, token_len, plaintext);
+        return plaintext;
     }
 
     /** Get X25519 private key (for link handshake — use carefully). */
@@ -292,19 +358,25 @@ private:
     bool _ready = false;
 
     // Private keys (stored in EEPROM)
-    uint8_t _x25519_private[32];   // X25519 private key
-    uint8_t _ed25519_seed[32];     // Ed25519 seed (32 bytes)
+    uint8_t _x25519_private[32] = {0};   // X25519 private key
+    uint8_t _ed25519_seed[32] = {0};     // Ed25519 seed (32 bytes)
 
     // Derived keys
-    uint8_t _x25519_public[32];    // X25519 public key
-    uint8_t _ed25519_secret[64];   // Ed25519 expanded secret key (64 bytes, monocypher format)
-    uint8_t _ed25519_public[32];   // Ed25519 public key
+    uint8_t _x25519_public[32] = {0};    // X25519 public key
+    uint8_t _ed25519_secret[64] = {0};   // Ed25519 expanded secret key (64 bytes, monocypher format)
+    uint8_t _ed25519_public[32] = {0};   // Ed25519 public key
 
     // Combined public key: [X25519_pub 32][Ed25519_pub 32]
-    uint8_t _public_key[64];
+    uint8_t _public_key[64] = {0};
 
     // Identity hash = SHA256(public_key)[:16]
-    uint8_t _identity_hash[16];
+    uint8_t _identity_hash[16] = {0};
+
+    static bool isAllZero(const uint8_t* value, size_t len) {
+        uint8_t combined = 0;
+        for (size_t i = 0; i < len; ++i) combined |= value[i];
+        return combined == 0;
+    }
 
     void generateIdentity() {
         // Generate 32 bytes of random data for each key using hardware TRNG
@@ -356,11 +428,11 @@ private:
         for (int i = 0; i < 32; i++) {
             _ed25519_seed[i] = EEPROM.read(EEPROM_ADDR_ED25519_SEED + i);
         }
-
-        return true;
+        return !isAllZero(_x25519_private, sizeof(_x25519_private)) &&
+               !isAllZero(_ed25519_seed, sizeof(_ed25519_seed));
     }
 
-    void saveIdentity() {
+    bool saveIdentity() {
         // Write magic
         for (int i = 0; i < 4; i++) {
             EEPROM.write(EEPROM_ADDR_IDENTITY_MAGIC + i, (IDENTITY_MAGIC >> (i * 8)) & 0xFF);
@@ -376,7 +448,7 @@ private:
             EEPROM.write(EEPROM_ADDR_ED25519_SEED + i, _ed25519_seed[i]);
         }
 
-        EEPROM.commit();
+        return EEPROM.commit();
     }
 };
 

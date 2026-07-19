@@ -12,7 +12,8 @@ RoutingTable::RoutingTable() : _last_prune_time(0), _last_recent_announce_prune(
 bool RoutingTable::routeMatchesCandidate(const RouteEntry& entry, const uint8_t *destination_addr,
                                          InterfaceType interface, const uint8_t* sender_mac,
                                          const IPAddress& sender_ip, uint16_t sender_port) {
-    if (!destination_addr || !Utils::compareAddresses(entry.destination_addr, destination_addr)) {
+    if (!destination_addr || memcmp(entry.destination_addr, destination_addr,
+                                    RNS_TRUNCATED_HASHLENGTH_BYTES) != 0) {
         return false;
     }
 
@@ -58,6 +59,17 @@ bool RoutingTable::isBetterRouteCandidate(const RouteEntry& candidate, const Rou
     return candidate.last_heard_time > currentBest.last_heard_time;
 }
 
+bool RoutingTable::isEspNowPeerReferenced(const uint8_t mac[6], const RouteEntry* excluding) const {
+    if (!mac) return false;
+    for (const auto& entry : _routes) {
+        if (&entry != excluding && entry.interface == InterfaceType::ESP_NOW &&
+            memcmp(entry.next_hop_mac, mac, 6) == 0) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void RoutingTable::update(const RnsPacketInfo &announcePacket, InterfaceType interface,
                            const uint8_t* sender_mac, const IPAddress& sender_ip, uint16_t sender_port,
                            InterfaceManager* ifManager)
@@ -72,7 +84,7 @@ void RoutingTable::update(const RnsPacketInfo &announcePacket, InterfaceType int
 
     // Check if this exact route candidate already exists
     for (auto it = _routes.begin(); it != _routes.end(); ++it) {
-        if (routeMatchesCandidate(*it, announcePacket.source, interface, sender_mac, sender_ip, sender_port)) {
+        if (routeMatchesCandidate(*it, announcePacket.destination_hash, interface, sender_mac, sender_ip, sender_port)) {
             it->last_heard_time = now;
             it->interface = interface;
             it->hops = announcePacket.hops;
@@ -87,7 +99,7 @@ void RoutingTable::update(const RnsPacketInfo &announcePacket, InterfaceType int
                 }
             } else if (interface == InterfaceType::WIFI_UDP) {
                  it->next_hop_ip = sender_ip;
-                 it->next_hop_port = RNS_UDP_PORT; // Assume standard RNS port for outgoing
+                 it->next_hop_port = sender_port != 0 ? sender_port : RNS_UDP_PORT;
                  memset(it->next_hop_mac, 0, 6);   // Clear MAC
             }
             found = true;
@@ -99,7 +111,7 @@ void RoutingTable::update(const RnsPacketInfo &announcePacket, InterfaceType int
     if (!found) {
         if (_routes.size() < MAX_ROUTES) {
             RouteEntry newEntry;
-            memcpy(newEntry.destination_addr, announcePacket.source, RNS_ADDRESS_SIZE);
+            memcpy(newEntry.destination_addr, announcePacket.destination_hash, RNS_TRUNCATED_HASHLENGTH_BYTES);
             newEntry.last_heard_time = now;
             newEntry.interface = interface;
             newEntry.hops = announcePacket.hops;
@@ -112,7 +124,7 @@ void RoutingTable::update(const RnsPacketInfo &announcePacket, InterfaceType int
                 }
             } else if (interface == InterfaceType::WIFI_UDP) {
                  newEntry.next_hop_ip = sender_ip;
-                 newEntry.next_hop_port = RNS_UDP_PORT;
+                 newEntry.next_hop_port = sender_port != 0 ? sender_port : RNS_UDP_PORT;
             }
             _routes.push_back(newEntry);
         } else {
@@ -123,19 +135,25 @@ void RoutingTable::update(const RnsPacketInfo &announcePacket, InterfaceType int
                 });
 
               if (oldest_it != _routes.end()) {
-                 DebugSerial.print("! RT Full. Replacing oldest route to "); Utils::printBytes(oldest_it->destination_addr, RNS_ADDRESS_SIZE, DebugSerial); DebugSerial.println();
+                 DebugSerial.print("! RT Full. Replacing oldest route to "); Utils::printBytes(oldest_it->destination_addr, RNS_TRUNCATED_HASHLENGTH_BYTES, DebugSerial); DebugSerial.println();
                   // If replacing an ESP-NOW route, remove the old peer to avoid stale entries.
-                  if (ifManager && oldest_it->interface == InterfaceType::ESP_NOW) {
+                  if (ifManager && oldest_it->interface == InterfaceType::ESP_NOW &&
+                      !isEspNowPeerReferenced(oldest_it->next_hop_mac, &(*oldest_it))) {
                      ifManager->removeEspNowPeer(oldest_it->next_hop_mac);
                   }
 
                 // Overwrite the oldest entry with new data
-                memcpy(oldest_it->destination_addr, announcePacket.source, RNS_ADDRESS_SIZE);
+                memcpy(oldest_it->destination_addr, announcePacket.destination_hash, RNS_TRUNCATED_HASHLENGTH_BYTES);
                 oldest_it->last_heard_time = now;
                 oldest_it->interface = interface;
                 oldest_it->hops = announcePacket.hops;
-                 if (interface == InterfaceType::ESP_NOW) { memcpy(oldest_it->next_hop_mac, sender_mac, 6); oldest_it->next_hop_ip=IPAddress(); oldest_it->next_hop_port=0; }
-                 else if (interface == InterfaceType::WIFI_UDP) { oldest_it->next_hop_ip = sender_ip; oldest_it->next_hop_port=RNS_UDP_PORT; memset(oldest_it->next_hop_mac,0,6); }
+                 if (interface == InterfaceType::ESP_NOW) {
+                     memcpy(oldest_it->next_hop_mac, sender_mac, 6);
+                     oldest_it->next_hop_ip = IPAddress();
+                     oldest_it->next_hop_port = 0;
+                     if (ifManager) ifManager->addEspNowPeer(sender_mac);
+                 }
+                 else if (interface == InterfaceType::WIFI_UDP) { oldest_it->next_hop_ip = sender_ip; oldest_it->next_hop_port = sender_port != 0 ? sender_port : RNS_UDP_PORT; memset(oldest_it->next_hop_mac,0,6); }
             } else {
                  DebugSerial.println("! RT Full. Error finding oldest route to replace."); // Should not happen if list not empty
             }
@@ -150,7 +168,7 @@ RouteEntry* RoutingTable::findRoute(const uint8_t *destination_addr,
 
     RouteEntry* best = nullptr;
     for (auto it = _routes.begin(); it != _routes.end(); ++it) {
-        if (!Utils::compareAddresses(it->destination_addr, destination_addr)) {
+        if (memcmp(it->destination_addr, destination_addr, RNS_TRUNCATED_HASHLENGTH_BYTES) != 0) {
             continue;
         }
 
@@ -175,7 +193,7 @@ RouteEntry* RoutingTable::findRouteForInterface(const uint8_t *destination_addr,
 
     RouteEntry* best = nullptr;
     for (auto it = _routes.begin(); it != _routes.end(); ++it) {
-        if (!Utils::compareAddresses(it->destination_addr, destination_addr) || it->interface != interface) {
+        if (memcmp(it->destination_addr, destination_addr, RNS_TRUNCATED_HASHLENGTH_BYTES) != 0 || it->interface != interface) {
             continue;
         }
 
@@ -193,12 +211,14 @@ void RoutingTable::prune(InterfaceManager* ifManager) {
     if (now - _last_prune_time > PRUNE_INTERVAL_MS) {
         for (auto it = _routes.begin(); it != _routes.end(); /* manual increment */ ) {
             if (now - it->last_heard_time > ROUTE_TIMEOUT_MS) {
-                 DebugSerial.print("RT: Route timed out for "); Utils::printBytes(it->destination_addr, RNS_ADDRESS_SIZE, DebugSerial); DebugSerial.println();
+                 DebugSerial.print("RT: Route timed out for "); Utils::printBytes(it->destination_addr, RNS_TRUNCATED_HASHLENGTH_BYTES, DebugSerial); DebugSerial.println();
                  // If it was an ESP-NOW route, remove the peer via InterfaceManager
-                 if (ifManager && it->interface == InterfaceType::ESP_NOW) {
-                      ifManager->removeEspNowPeer(it->next_hop_mac);
-                 }
+                 const bool removePeer = ifManager && it->interface == InterfaceType::ESP_NOW &&
+                     !isEspNowPeerReferenced(it->next_hop_mac, &(*it));
+                 uint8_t expiredMac[6] = {0};
+                 if (removePeer) memcpy(expiredMac, it->next_hop_mac, sizeof(expiredMac));
                 it = _routes.erase(it); // Erase and get iterator to next element
+                if (removePeer) ifManager->removeEspNowPeer(expiredMac);
                 // changed = true; // tracking variable removed
             } else {
                 ++it; // Only increment if not erased
@@ -215,7 +235,7 @@ void RoutingTable::print() {
     int i = 0;
     unsigned long now = millis();
     for (const auto& entry : _routes) {
-        DebugSerial.print(i++); DebugSerial.print(": Dst="); Utils::printBytes(entry.destination_addr, RNS_ADDRESS_SIZE, DebugSerial);
+        DebugSerial.print(i++); DebugSerial.print(": Dst="); Utils::printBytes(entry.destination_addr, RNS_TRUNCATED_HASHLENGTH_BYTES, DebugSerial);
         DebugSerial.print(" If="); DebugSerial.print(static_cast<int>(entry.interface));
         DebugSerial.print(" Hops="); DebugSerial.print(entry.hops);
         if (entry.interface == InterfaceType::ESP_NOW) { DebugSerial.print(" MAC="); Utils::printBytes(entry.next_hop_mac, 6, DebugSerial); }
@@ -226,21 +246,21 @@ void RoutingTable::print() {
 }
 
 size_t RoutingTable::getRouteCount() const {
-    std::vector<std::array<uint8_t, RNS_ADDRESS_SIZE>> destinations;
+    std::vector<std::array<uint8_t, RNS_TRUNCATED_HASHLENGTH_BYTES>> destinations;
     destinations.reserve(_routes.size());
 
     for (const auto& entry : _routes) {
         bool seen = false;
         for (const auto& destination : destinations) {
-            if (memcmp(destination.data(), entry.destination_addr, RNS_ADDRESS_SIZE) == 0) {
+            if (memcmp(destination.data(), entry.destination_addr, RNS_TRUNCATED_HASHLENGTH_BYTES) == 0) {
                 seen = true;
                 break;
             }
         }
 
         if (!seen) {
-            std::array<uint8_t, RNS_ADDRESS_SIZE> destination = {0};
-            memcpy(destination.data(), entry.destination_addr, RNS_ADDRESS_SIZE);
+            std::array<uint8_t, RNS_TRUNCATED_HASHLENGTH_BYTES> destination = {0};
+            memcpy(destination.data(), entry.destination_addr, RNS_TRUNCATED_HASHLENGTH_BYTES);
             destinations.push_back(destination);
         }
     }
@@ -270,7 +290,7 @@ std::vector<RouteDiagnosticGroup> RoutingTable::getRouteDiagnostics(const std::f
     for (const auto& entry : _routes) {
         RouteDiagnosticGroup* group = nullptr;
         for (auto& candidateGroup : groups) {
-            if (memcmp(candidateGroup.destination_addr.data(), entry.destination_addr, RNS_ADDRESS_SIZE) == 0) {
+            if (memcmp(candidateGroup.destination_addr.data(), entry.destination_addr, RNS_TRUNCATED_HASHLENGTH_BYTES) == 0) {
                 group = &candidateGroup;
                 break;
             }
@@ -278,7 +298,7 @@ std::vector<RouteDiagnosticGroup> RoutingTable::getRouteDiagnostics(const std::f
 
         if (!group) {
             RouteDiagnosticGroup newGroup;
-            memcpy(newGroup.destination_addr.data(), entry.destination_addr, RNS_ADDRESS_SIZE);
+            memcpy(newGroup.destination_addr.data(), entry.destination_addr, RNS_TRUNCATED_HASHLENGTH_BYTES);
             groups.push_back(std::move(newGroup));
             group = &groups.back();
         }
@@ -326,20 +346,18 @@ std::vector<RouteDiagnosticGroup> RoutingTable::getRouteDiagnostics(const std::f
 }
 
 // --- Announce Forwarding Prevention ---
-bool RoutingTable::shouldForwardAnnounce(uint32_t packet_id, const uint8_t* source_addr) {
-    if (!source_addr) return false;
+bool RoutingTable::shouldForwardAnnounce(const uint8_t packet_hash[32]) {
+    if (!packet_hash) return false;
     pruneRecentAnnounces();
     RecentAnnounceKey key;
-    key.packet_id = packet_id;
-    memcpy(key.source_prefix, source_addr, sizeof(key.source_prefix));
+    memcpy(key.packet_hash.data(), packet_hash, key.packet_hash.size());
     return _recentAnnounces.find(key) == _recentAnnounces.end();
 }
 
-void RoutingTable::markAnnounceForwarded(uint32_t packet_id, const uint8_t* source_addr) {
-    if (!source_addr) return;
+void RoutingTable::markAnnounceForwarded(const uint8_t packet_hash[32]) {
+    if (!packet_hash) return;
     RecentAnnounceKey key;
-    key.packet_id = packet_id;
-    memcpy(key.source_prefix, source_addr, sizeof(key.source_prefix));
+    memcpy(key.packet_hash.data(), packet_hash, key.packet_hash.size());
     _recentAnnounces[key] = millis();
     if (_recentAnnounces.size() > MAX_RECENT_ANNOUNCES) { // Prune if exceeds limit slightly
         pruneRecentAnnounces(true);

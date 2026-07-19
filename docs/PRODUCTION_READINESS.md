@@ -1,7 +1,7 @@
 # Production Readiness Plan
 
-**Document Version:** 1.0
-**Date:** 2026-06-26
+**Document Version:** 1.1
+**Date:** 2026-07-19
 **System Designation:** ESP32-RNS-GW-PROD
 
 ---
@@ -16,16 +16,44 @@ The goal is to make every shipped unit traceable, recoverable, updateable, and s
 
 ## 2.0 PRODUCT RELEASE GATES
 
+### 2.0.1 Software validation snapshot
+
+The 0.3.1 release-candidate source passed the following local software gates on 2026-07-19:
+
+- canonical managed, offline USB, web/API, minimal, serial-test, and original ESP32 CI builds;
+- ESP32-S2, ESP32-S3, and Heltec LoRa v3 compatibility builds;
+- production `-Wall -Werror` compilation, with the canonical artifact using 12.8% RAM and 69.3% application flash;
+- embedded unit-test firmware compilation;
+- Cppcheck warning/performance/portability analysis;
+- six host provisioning/release tests, including real Ed25519 signing and package verification;
+- Python, shell, JSON, YAML, and Git whitespace validation.
+
+No compatible serial device was present for this source review, so embedded tests and the HIL workflow were not executed on hardware. This snapshot is evidence for entering hardware acceptance, not permission to skip any gate below.
+
 ### 2.1 Firmware Gate
 
 A firmware build can be released only when:
 
 1. `pio run` passes for the default production target.
-2. `pio run -e esp32-c3-web` passes for the managed/API target.
-3. `pio test -e test --without-uploading --without-testing` passes in CI.
+2. `pio run -e esp32-c3-prod-usb` passes for the offline fallback target.
+3. CI compiles the hardware test image and the `Hardware acceptance` workflow executes it on a physical ESP32-C3.
 4. A hardware-in-the-loop smoke test passes on at least two ESP32-C3 nodes.
 5. KISS-over-USB and ESP-NOW relay are verified with real packet traffic.
 6. No placeholder API token or empty OTA public key is shipped in field config.
+7. The release commit is clean and its generated package passes `tools/package_release.py` signature and checksum verification.
+
+The optional `HAM_MODEM_ENABLED` audio/Winlink bundle is experimental and is
+intentionally rejected by `PRODUCTION_BUILD`. It requires board-specific analog
+validation, over-the-air interoperability tests, and regional radio compliance
+review before it can become a release feature.
+
+The implemented Reticulum link handshake authenticates and encrypts sessions, but it does not provide automatic data ACKs, retransmission, delivery proofs, resource transfer, or guaranteed ordering. A pilot workflow that needs confirmed delivery must supply an application-level acknowledgement/retry contract or use a full Reticulum endpoint for that function.
+
+### 2.1.1 Hardware Security Gate
+
+The pinned Arduino framework used by the canonical build has Secure Boot and Flash Encryption disabled in its prebuilt SDK configuration. Therefore the current artifact is suitable for hardware acceptance and controlled pilots, but must not be approved for an unattended or physically exposed production deployment until the production build/bootloader enables both features and manufacturing verifies their eFuse state on every shipped device. Burning security eFuses is irreversible and belongs in the controlled factory process, not CI.
+
+The bearer-token HTTP API also provides no transport encryption. Production deployment must place it on an encrypted, access-controlled management network or behind a TLS VPN/gateway; it must never be exposed directly to an untrusted LAN or the Internet.
 
 ### 2.2 OTA Gate
 
@@ -33,7 +61,7 @@ OTA is considered production-capable when:
 
 1. Firmware upload is streamed to SPIFFS.
 2. Signature verification does not allocate the full firmware image in RAM.
-3. The signature is Ed25519 over `SHA-512(firmware.bin)`.
+3. The signature is Ed25519 over `SHA-512("RNS-OTA-V1\\0" || version || "\\0" || firmware.bin)`.
 4. The device verifies the signature before calling `Update.begin()`.
 5. The release package contains the firmware binary, signature, public key ID, version, and changelog.
 6. Rollback/recovery behavior has been tested on a failed update and a power-loss simulation.
@@ -64,10 +92,14 @@ pio run
 Sign the binary:
 
 ```bash
-./tools/sign_firmware.sh .pio/build/esp32-c3-prod-usb/firmware.bin keys/ota-ed25519.pem release/signature.hex
+./tools/sign_firmware.sh 0.3.1 .pio/build/esp32-c3-prod-managed/firmware.bin keys/ota-ed25519.pem release/signature.hex
+./tools/package_release.py --version 0.3.1 \
+  --firmware .pio/build/esp32-c3-prod-managed/firmware.bin \
+  --signature release/signature.hex --public-key keys/ota-ed25519.pub.pem \
+  --output-dir release/0.3.1
 ```
 
-The signing helper signs `SHA-512(firmware.bin)`, not the raw firmware stream. This matches the constant-memory verifier in the device OTA endpoint.
+The version is part of the signed digest, allowing the device to reject signed-image replay and downgrades while retaining constant-memory verification. It must match the version embedded by `platformio.ini`. The manifest key ID is SHA-256 over the raw 32-byte Ed25519 public key, truncated to 16 hexadecimal characters; provisioning and release tooling enforce the same rule.
 
 ### 3.2 Generate Per-Device Config
 
@@ -75,6 +107,8 @@ The signing helper signs `SHA-512(firmware.bin)`, not the raw firmware stream. T
 ./tools/make_device_config.py \
   --device-id RNS-000001 \
   --node-name field-node-001 \
+  --wifi-ssid field-net \
+  --wifi-password "$WIFI_PASSWORD" \
   --api-public-key "<64_hex_chars>" \
   --out-dir provisioning/devices \
   --manifest provisioning/device_manifest.csv
@@ -85,7 +119,7 @@ The generated config contains a strong per-device API token and is recorded in t
 ### 3.3 Flash And Provision
 
 1. Flash firmware with PlatformIO.
-2. Upload the per-device filesystem config or POST it through the bootstrap API.
+2. Upload the per-device filesystem config before joining the field network. Production builds do not allow unauthenticated network bootstrap.
 3. Restart the unit if the provisioning response returns `X-Restart-Required: true`.
 4. Query `/api/v1/status`.
 5. Confirm `config_present=true`, `bootstrap_mode=false`, expected `device_id`, expected `node_name`, and valid interface health.
@@ -101,6 +135,7 @@ For every unit:
 5. `/api/v1/status` responds with no placeholder token behavior.
 6. Signed OTA rejects a bad signature.
 7. Signed OTA accepts a known-good signature on a test image or staging unit.
+8. Secure Boot and Flash Encryption state is recorded for the unit when required by the deployment threat model.
 
 ---
 

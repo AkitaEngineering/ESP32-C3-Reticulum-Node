@@ -7,6 +7,14 @@
   },
   "item": [
     {
+      "name": "Get Routes",
+      "request": {
+        "method": "GET",
+        "header": [ { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" } ],
+        "url": { "raw": "http://{{host}}:{{port}}/api/v1/routes", "host": ["{{host}}"], "port": "{{port}}", "path": ["api","v1","routes"] }
+      }
+    },
+    {
       "name": "Get Status",
       "request": {
         "method": "GET",
@@ -32,7 +40,7 @@
           { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
           { "key": "Content-Type", "value": "application/json", "type": "text" }
         ],
-        "body": { "mode": "raw", "raw": "{\n  \"node_name\": \"\",\n  \"rns_app_name\": \"esp32.node\",\n  \"wifi\": { \"ssid\": \"myssid\", \"password\": \"mypw\" }\n}" },
+        "body": { "mode": "raw", "raw": "{\n  \"node_name\": \"{{node_name}}\",\n  \"rns_app_name\": \"esp32.node\",\n  \"wifi\": { \"ssid\": \"{{wifi_ssid}}\", \"password\": \"{{wifi_password}}\" },\n  \"api\": { \"auth_enabled\": true, \"token\": \"{{token}}\", \"public_key\": \"{{public_key}}\" }\n}" },
         "url": { "raw": "http://{{host}}:{{port}}/api/v1/config", "host": ["{{host}}"], "port": "{{port}}", "path": ["api","v1","config"] }
       }
     },
@@ -40,7 +48,10 @@
       "name": "Save Config",
       "request": {
         "method": "POST",
-        "header": [ { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" } ],
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+          { "key": "Content-Length", "value": "0", "type": "text" }
+        ],
         "url": { "raw": "http://{{host}}:{{port}}/api/v1/config/save", "host": ["{{host}}"], "port": "{{port}}", "path": ["api","v1","config","save"] }
       }
     },
@@ -51,10 +62,30 @@
         "header": [
           { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
           { "key": "X-Signature-Ed25519", "value": "{{signature}}", "type": "text" },
+          { "key": "X-Firmware-Version", "value": "{{firmware_version}}", "type": "text" },
           { "key": "Content-Type", "value": "application/octet-stream", "type": "text" }
         ],
         "body": { "mode": "file", "file": "{{firmware_file}}" },
         "url": { "raw": "http://{{host}}:{{port}}/api/v1/ota", "host": ["{{host}}"], "port": "{{port}}", "path": ["api","v1","ota"] }
+      }
+    },
+    {
+      "name": "Get Metrics",
+      "request": {
+        "method": "GET",
+        "header": [ { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" } ],
+        "url": { "raw": "http://{{host}}:{{port}}/api/v1/metrics", "host": ["{{host}}"], "port": "{{port}}", "path": ["api","v1","metrics"] }
+      }
+    },
+    {
+      "name": "Restart",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{token}}", "type": "text" },
+          { "key": "Content-Length", "value": "0", "type": "text" }
+        ],
+        "url": { "raw": "http://{{host}}:{{port}}/api/v1/restart", "host": ["{{host}}"], "port": "{{port}}", "path": ["api","v1","restart"] }
       }
     }
   ],
@@ -62,7 +93,12 @@
     { "key": "host", "value": "<device-ip>" },
     { "key": "port", "value": "80" },
     { "key": "token", "value": "" },
+    { "key": "node_name", "value": "field-node-001" },
+    { "key": "wifi_ssid", "value": "field-net" },
+    { "key": "wifi_password", "value": "replace-with-valid-password" },
+    { "key": "public_key", "value": "" },
     { "key": "signature", "value": "" },
+    { "key": "firmware_version", "value": "0.3.1" },
     { "key": "firmware_file", "value": "firmware.bin" }
   ]
 }

@@ -12,6 +12,18 @@ Revisions are listed in reverse chronological order (most recent first).
 
 ---
 
+### Firmware 0.3.1 — Production Hardening Release Candidate (2026-07-19)
+
+- Hardened Reticulum packet validation, signed announces, identity encryption, authenticated link establishment, negotiated MTU handling, interface binding, routing failover, and ESP-NOW fragmentation/concurrency.
+- Hardened HTTP parsing, exact Bearer authentication, secret redaction, atomic validated configuration writes, version-bound streaming signed OTA, and upload limits/timeouts.
+- Added per-device provisioning and release-package verification, with one raw-Ed25519 public-key ID contract.
+- Added AX.25/APRS and Fernet regression tests, hardware-acceptance CI, production build gates, static checks, and managed release documentation.
+- Removed tracked build output and example secrets from source control and excluded generated trees from editor indexing.
+- Corrected the documented product boundary: link sessions are authenticated/encrypted but do not yet implement automatic delivery ACK/retry; HAM/audio/Winlink-style support remains experimental.
+- Classified 0.3.1 as suitable for controlled pilots only until physical HIL, OTA recovery/power-loss, Secure Boot/Flash Encryption, manufacturing, and regulatory gates pass.
+
+---
+
 ### 2.3 — Provisioning Status and Commercialization Strategy (2026-05-18)
 
 #### Productization Documentation

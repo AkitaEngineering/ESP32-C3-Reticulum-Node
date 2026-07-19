@@ -14,6 +14,8 @@ paths:
   /api/v1/status:
     get:
       summary: Node status
+      security:
+        - bearerAuth: []
       responses:
         '200':
           description: Node status JSON
@@ -27,6 +29,8 @@ paths:
                   device_id:
                     type: string
                   rns_app_name:
+                    type: string
+                  firmware_version:
                     type: string
                   uptime_s:
                     type: integer
@@ -83,6 +87,8 @@ paths:
   /api/v1/routes:
     get:
       summary: Route diagnostics
+      security:
+        - bearerAuth: []
       responses:
         '200':
           description: Grouped route diagnostics JSON
@@ -169,11 +175,11 @@ paths:
             X-Restart-Required:
               schema:
                 type: string
-              description: `true` when the saved configuration requires a restart to take full effect.
+              description: "`true` when the saved configuration requires a restart to take full effect."
             X-Restart-Reason:
               schema:
                 type: string
-              description: Present when `X-Restart-Required` is `true`; currently used for `rns_app_name_changed`.
+              description: "Present when `X-Restart-Required` is `true`; currently used for `rns_app_name_changed` or `wifi_config_changed`."
           content:
             application/json:
               schema:
@@ -205,8 +211,16 @@ paths:
           schema:
             type: string
           required: true
-          description: Hex-encoded Ed25519 signature of SHA-512(firmware.bin)
+          description: Hex-encoded Ed25519 signature of the version-bound OTA digest
+        - in: header
+          name: X-Firmware-Version
+          schema:
+            type: string
+            pattern: '^\d+\.\d+\.\d+$'
+          required: true
+          description: Semantic version newer than the running firmware; included in the signed digest
       requestBody:
+        required: true
         content:
           application/octet-stream:
             schema:
@@ -223,6 +237,29 @@ paths:
           description: Bad request or incomplete upload
         '403':
           description: Invalid signature
+        '408':
+          description: Upload timed out or ended before Content-Length bytes were received
+        '409':
+          description: Firmware version is not newer than the running version
+        '411':
+          description: Content-Length is required
+
+  /api/v1/restart:
+    post:
+      summary: Persist node state and restart
+      security:
+        - bearerAuth: []
+      responses:
+        '200':
+          description: Restart scheduled
+          content:
+            text/plain:
+              schema:
+                type: string
+        '401':
+          description: Missing or invalid Bearer token
+        '411':
+          description: Content-Length is required
 
   /api/v1/metrics:
     get:
@@ -237,6 +274,8 @@ paths:
               schema:
                 type: object
                 properties:
+                  firmware_version:
+                    type: string
                   heap_free:
                     type: integer
                   uptime_s:
@@ -274,4 +313,4 @@ components:
     bearerAuth:
       type: http
       scheme: bearer
-      bearerFormat: JWT
+      description: Opaque per-device API token; this is not a JWT.

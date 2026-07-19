@@ -18,6 +18,7 @@ This script:
 No simulation — real packets over real wireless.
 """
 
+import argparse
 import sys
 import time
 import struct
@@ -144,9 +145,17 @@ def monitor_board_b(stop_event: threading.Event, results: list):
 
 
 def main():
-    message = "KISS mesh test from PC"
-    if len(sys.argv) > 1:
-        message = " ".join(sys.argv[1:])
+    global KISS_PORT, DEBUG_PORT, TIMEOUT
+    parser = argparse.ArgumentParser(description="Run the real two-node USB KISS to ESP-NOW relay acceptance test")
+    parser.add_argument("--kiss-port", default=KISS_PORT)
+    parser.add_argument("--receiver-port", default=DEBUG_PORT)
+    parser.add_argument("--timeout", type=int, default=TIMEOUT)
+    parser.add_argument("--message", default="KISS mesh test from PC")
+    args = parser.parse_args()
+    KISS_PORT = args.kiss_port
+    DEBUG_PORT = args.receiver_port
+    TIMEOUT = args.timeout
+    message = args.message
 
     print("=" * 60)
     print("  Real KISS Mesh Relay Test")
@@ -223,7 +232,7 @@ def main():
     except serial.SerialException as e:
         print(f"[KISS] Error: {e}")
         stop_event.set()
-        sys.exit(1)
+        return 1
 
     # Wait for Board B to show evidence of receipt
     print()
@@ -244,11 +253,13 @@ def main():
         print(f"  Evidence lines: {len(results)}")
         for r in results:
             print(f"    → {r}")
+        return 0
     else:
         print("  No relay evidence detected on Board B.")
         print("  (Check that both boards are powered and ESP-NOW is active)")
+        return 1
     print("=" * 60)
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

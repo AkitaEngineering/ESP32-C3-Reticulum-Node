@@ -4,6 +4,15 @@
 #include "ReticulumPacket.h"
 #include "Utils.h"
 #include <Arduino.h>
+#include <cmath>
+
+namespace {
+bool isAllZero(const uint8_t* value, size_t len) {
+    uint8_t combined = 0;
+    for (size_t i = 0; i < len; ++i) combined |= value[i];
+    return combined == 0;
+}
+}
 
 // ========================================================================
 // Signalling byte helpers (matches RNS/Link.py signalling_bytes / mode_from_*)
@@ -36,12 +45,14 @@ uint8_t RNSLink::modeFromSignalling(const uint8_t sig[3]) {
 RNSLink::RNSLink(const uint8_t link_id[16],
                   const uint8_t peer_pub[32],
                   const uint8_t peer_sig_pub[32],
+                  InterfaceType attachedInterface,
                   LinkManager& owner,
                   RNSCrypto& identity)
     : _initiator(false), _state(RNSLinkState::PENDING),
       _ownerRef(owner), _identityRef(identity),
       _keys_derived(false), _mtu(RNS_MTU),
       _mode(RNS_LINK_MODE_AES256_CBC),
+      _attachedInterface(attachedInterface),
       _lastActivityTime(millis()), _requestTime(millis()),
       _rtt(0), _rttMeasured(false)
 {
@@ -72,6 +83,7 @@ RNSLink::RNSLink(const uint8_t dest_hash[16],
       _ownerRef(owner), _identityRef(identity),
       _keys_derived(false), _mtu(RNS_MTU),
       _mode(RNS_LINK_MODE_AES256_CBC),
+      _attachedInterface(InterfaceType::UNKNOWN),
       _lastActivityTime(millis()), _requestTime(0),
       _rtt(0), _rttMeasured(false)
 {
@@ -99,6 +111,7 @@ void RNSLink::wipeKeys() {
     crypto_wipe(_sig_priv, 64);
     crypto_wipe(_sig_seed, 32);
     crypto_wipe(_derived_key, 64);
+    _token.clear();
     _keys_derived = false;
 }
 
@@ -151,7 +164,7 @@ bool RNSLink::establish() {
         RNSIdentity::truncated_hash(hashable, hashable_len, _link_id);
     }
 
-    _ownerRef.sendPacketRaw(buffer, len, _dest_hash);
+    _ownerRef.sendPacketRaw(buffer, len, _dest_hash, _attachedInterface);
     _requestTime = millis();
     updateActivity();
 
@@ -173,6 +186,12 @@ bool RNSLink::handshake() {
     // X25519 ECDH: shared_key = X25519(our_priv, peer_pub)
     uint8_t shared_key[32];
     crypto_x25519(shared_key, _x25519_priv, _peer_x25519_pub);
+    if (isAllZero(shared_key, sizeof(shared_key))) {
+        DebugSerial.println("! RNSLink::handshake: invalid peer key");
+        crypto_wipe(shared_key, sizeof(shared_key));
+        _state = RNSLinkState::CLOSED;
+        return false;
+    }
 
     // Derive 64-byte key via HKDF-SHA256
     // salt = link_id, context = empty (matching RNS get_salt()/get_context())
@@ -192,6 +211,13 @@ bool RNSLink::handshake() {
     _token.init(_derived_key);
     _keys_derived = true;
 
+    return true;
+}
+
+bool RNSLink::setMtu(uint32_t mtu) {
+    static constexpr uint32_t MIN_LINK_MTU = RNS_HEADER_1_SIZE + RNS_LINK_PROOF_SIZE;
+    if (_state != RNSLinkState::PENDING || mtu < MIN_LINK_MTU || mtu > RNS_MTU) return false;
+    _mtu = mtu;
     return true;
 }
 
@@ -246,7 +272,7 @@ bool RNSLink::prove() {
         return false;
     }
 
-    _ownerRef.sendPacketRaw(buffer, len, _link_id);
+    _ownerRef.sendPacketRaw(buffer, len, _link_id, _attachedInterface);
     updateActivity();
     DebugSerial.println("[Link] LRPROOF sent");
     return true;
@@ -257,8 +283,8 @@ bool RNSLink::prove() {
 // ========================================================================
 
 bool RNSLink::validateProof(const uint8_t* proof_data, size_t proof_len,
-                             const uint8_t* /*raw_packet*/, size_t /*raw_len*/) {
-    if (!_initiator || _state != RNSLinkState::PENDING) return false;
+                            InterfaceType incomingInterface) {
+    if (!_initiator || _state != RNSLinkState::PENDING || !proof_data) return false;
 
     // Proof can be 64+32 = 96 bytes (no signalling) or 64+32+3 = 99 bytes
     if (proof_len != RNS_LINK_PROOF_SIZE && proof_len != 96) {
@@ -279,9 +305,10 @@ bool RNSLink::validateProof(const uint8_t* proof_data, size_t proof_len,
             DebugSerial.println("! RNSLink::validateProof: mode mismatch");
             return false;
         }
-        uint32_t confirmed_mtu = mtuFromSignalling(signalling);
-        if (confirmed_mtu > 0 && confirmed_mtu <= RNS_MTU) {
-            _mtu = confirmed_mtu;
+        const uint32_t confirmed_mtu = mtuFromSignalling(signalling);
+        if (!setMtu(confirmed_mtu)) {
+            DebugSerial.println("! RNSLink::validateProof: invalid negotiated MTU");
+            return false;
         }
     }
 
@@ -289,9 +316,6 @@ bool RNSLink::validateProof(const uint8_t* proof_data, size_t proof_len,
     memcpy(_peer_x25519_pub, peer_pub_bytes, 32);
     // Peer sig pub = destination's Ed25519 public key (second 32 bytes of dest_pub_key)
     memcpy(_peer_sig_pub, _dest_pub_key + 32, 32);
-
-    // Perform ECDH handshake
-    if (!handshake()) return false;
 
     // Verify signature: signed_data = link_id + peer_x25519_pub + peer_sig_pub + signalling
     uint8_t signed_data[16 + 32 + 32 + 3];
@@ -311,6 +335,11 @@ bool RNSLink::validateProof(const uint8_t* proof_data, size_t proof_len,
         _state = RNSLinkState::CLOSED;
         return false;
     }
+
+    _attachedInterface = incomingInterface;
+
+    // Only derive session keys after authenticating the responder proof.
+    if (!handshake()) return false;
 
     // Link is now ACTIVE
     _state = RNSLinkState::ACTIVE;
@@ -336,16 +365,19 @@ bool RNSLink::validateProof(const uint8_t* proof_data, size_t proof_len,
     std::vector<uint8_t> rtt_payload(rtt_data, rtt_data + 5);
     uint8_t buffer[MAX_PACKET_SIZE];
     size_t len = 0;
-    ReticulumPacket::serialize(buffer, len,
+    if (!ReticulumPacket::serialize(buffer, len,
         _link_id,
         RNS_PACKET_DATA,
         RNS_DEST_LINK,
         RNS_PROPAGATION_BROADCAST,
         RNS_CONTEXT_LRRTT,
         0,
-        rtt_payload);
+        rtt_payload)) {
+        close(false);
+        return false;
+    }
 
-    _ownerRef.sendPacketRaw(buffer, len, _link_id);
+    _ownerRef.sendPacketRaw(buffer, len, _link_id, _attachedInterface);
 
     return true;
 }
@@ -354,11 +386,11 @@ bool RNSLink::validateProof(const uint8_t* proof_data, size_t proof_len,
 // Responder: handleRTT() — process RTT packet from initiator
 // ========================================================================
 
-void RNSLink::handleRTT(const uint8_t* data, size_t len) {
-    if (_state != RNSLinkState::HANDSHAKE) return;
+bool RNSLink::handleRTT(const uint8_t* data, size_t len) {
+    if (_state != RNSLinkState::HANDSHAKE || !data) return false;
 
     // Decode msgpack float32: [0xCA][4 bytes]
-    if (len >= 5 && data[0] == 0xCA) {
+    if (len == 5 && data[0] == 0xCA) {
         union { float f; uint32_t u; } conv;
         conv.u = ((uint32_t)data[1] << 24) | ((uint32_t)data[2] << 16) |
                  ((uint32_t)data[3] << 8) | data[4];
@@ -366,7 +398,7 @@ void RNSLink::handleRTT(const uint8_t* data, size_t len) {
         _rttMeasured = true;
     }
     // Also accept msgpack float64: [0xCB][8 bytes] — truncate to float
-    else if (len >= 9 && data[0] == 0xCB) {
+    else if (len == 9 && data[0] == 0xCB) {
         // Read as double, store as float
         uint64_t u64 = 0;
         for (int i = 0; i < 8; i++) u64 = (u64 << 8) | data[1 + i];
@@ -374,13 +406,18 @@ void RNSLink::handleRTT(const uint8_t* data, size_t len) {
         dconv.u = u64;
         _rtt = (float)dconv.d;
         _rttMeasured = true;
+    } else {
+        return false;
     }
+
+    if (!std::isfinite(_rtt) || _rtt < 0.0f || _rtt > 3600.0f) return false;
 
     _state = RNSLinkState::ACTIVE;
     updateActivity();
     DebugSerial.print("[Link] ACTIVE (responder), RTT=");
     DebugSerial.print(_rtt * 1000.0f, 1);
     DebugSerial.println("ms");
+    return true;
 }
 
 // ========================================================================
@@ -393,8 +430,14 @@ std::vector<uint8_t> RNSLink::encrypt(const uint8_t* plaintext, size_t len) {
 }
 
 std::vector<uint8_t> RNSLink::decrypt(const uint8_t* ciphertext, size_t len) {
-    if (!_keys_derived) return {};
-    return _token.decrypt(ciphertext, len);
+    std::vector<uint8_t> plaintext;
+    (void)decrypt(ciphertext, len, plaintext);
+    return plaintext;
+}
+
+bool RNSLink::decrypt(const uint8_t* ciphertext, size_t len, std::vector<uint8_t>& plaintext) {
+    plaintext.clear();
+    return _keys_derived && _token.decrypt(ciphertext, len, plaintext);
 }
 
 void RNSLink::sign(uint8_t signature[64], const uint8_t* message, size_t msg_len) {
@@ -415,10 +458,15 @@ bool RNSLink::sendData(const uint8_t* data, size_t len) {
         DebugSerial.println("! RNSLink::sendData: link not active");
         return false;
     }
+    if (!data || len == 0) return false;
 
     auto encrypted = encrypt(data, len);
     if (encrypted.empty()) {
         DebugSerial.println("! RNSLink::sendData: encryption failed");
+        return false;
+    }
+    if (RNS_HEADER_1_SIZE + encrypted.size() > _mtu) {
+        DebugSerial.println("! RNSLink::sendData: payload exceeds negotiated MTU");
         return false;
     }
 
@@ -439,7 +487,7 @@ bool RNSLink::sendData(const uint8_t* data, size_t len) {
         return false;
     }
 
-    _ownerRef.sendPacketRaw(buffer, pkt_len, _link_id);
+    _ownerRef.sendPacketRaw(buffer, pkt_len, _link_id, _attachedInterface);
     updateActivity();
     return true;
 }
@@ -448,9 +496,13 @@ bool RNSLink::sendData(const uint8_t* data, size_t len) {
 // Handle incoming packets on this link
 // ========================================================================
 
-void RNSLink::handlePacket(const RnsPacketInfo& packetInfo) {
+void RNSLink::handlePacket(const RnsPacketInfo& packetInfo, InterfaceType incomingInterface) {
     if (!packetInfo.valid) return;
-    updateActivity();
+
+    if (_attachedInterface != InterfaceType::UNKNOWN && incomingInterface != _attachedInterface) {
+        DebugSerial.println("! Link packet received on unexpected interface");
+        return;
+    }
 
     uint8_t ctx = packetInfo.context;
 
@@ -458,7 +510,7 @@ void RNSLink::handlePacket(const RnsPacketInfo& packetInfo) {
         case RNSLinkState::PENDING:
             // Initiator waiting for proof
             if (ctx == RNS_CONTEXT_LRPROOF && packetInfo.packet_type == RNS_PACKET_PROOF) {
-                validateProof(packetInfo.data.data(), packetInfo.data.size(), nullptr, 0);
+                validateProof(packetInfo.data.data(), packetInfo.data.size(), incomingInterface);
             }
             break;
 
@@ -472,8 +524,9 @@ void RNSLink::handlePacket(const RnsPacketInfo& packetInfo) {
         case RNSLinkState::ACTIVE: {
             if (ctx == RNS_CONTEXT_NONE && packetInfo.packet_type == RNS_PACKET_DATA) {
                 // Encrypted data — decrypt and deliver
-                auto plaintext = decrypt(packetInfo.data.data(), packetInfo.data.size());
-                if (!plaintext.empty()) {
+                std::vector<uint8_t> plaintext;
+                if (decrypt(packetInfo.data.data(), packetInfo.data.size(), plaintext)) {
+                    updateActivity();
                     _ownerRef.processReceivedLinkData(_link_id, plaintext);
                 }
             }
@@ -490,19 +543,23 @@ void RNSLink::handlePacket(const RnsPacketInfo& packetInfo) {
             else if (ctx == RNS_CONTEXT_KEEPALIVE) {
                 // Keepalive: if 0xFF from initiator, respond with 0xFE
                 if (!_initiator && packetInfo.data.size() == 1 && packetInfo.data[0] == 0xFF) {
+                    updateActivity();
                     uint8_t resp = 0xFE;
                     std::vector<uint8_t> kp = {resp};
                     uint8_t buffer[MAX_PACKET_SIZE];
                     size_t len = 0;
-                    ReticulumPacket::serialize(buffer, len, _link_id,
+                    if (ReticulumPacket::serialize(buffer, len, _link_id,
                         RNS_PACKET_DATA, RNS_DEST_LINK, RNS_PROPAGATION_BROADCAST,
-                        RNS_CONTEXT_KEEPALIVE, 0, kp);
-                    _ownerRef.sendPacketRaw(buffer, len, _link_id);
+                        RNS_CONTEXT_KEEPALIVE, 0, kp)) {
+                        _ownerRef.sendPacketRaw(buffer, len, _link_id, _attachedInterface);
+                    }
+                } else if (_initiator && packetInfo.data.size() == 1 && packetInfo.data[0] == 0xFE) {
+                    updateActivity();
                 }
             }
             else if (ctx == RNS_CONTEXT_LRRTT) {
                 // RTT measurement in active state (from initiator → responder)
-                handleRTT(packetInfo.data.data(), packetInfo.data.size());
+                // Ignore duplicate RTT messages after activation.
             }
             break;
         }
@@ -526,10 +583,11 @@ void RNSLink::close(bool notifyPeer) {
         if (!encrypted.empty()) {
             uint8_t buffer[MAX_PACKET_SIZE];
             size_t len = 0;
-            ReticulumPacket::serialize(buffer, len, _link_id,
+            if (ReticulumPacket::serialize(buffer, len, _link_id,
                 RNS_PACKET_DATA, RNS_DEST_LINK, RNS_PROPAGATION_BROADCAST,
-                RNS_CONTEXT_LINKCLOSE, 0, encrypted);
-            _ownerRef.sendPacketRaw(buffer, len, _link_id);
+                RNS_CONTEXT_LINKCLOSE, 0, encrypted)) {
+                _ownerRef.sendPacketRaw(buffer, len, _link_id, _attachedInterface);
+            }
         }
     }
 

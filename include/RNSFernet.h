@@ -27,6 +27,7 @@
 #include <esp_random.h>
 #include <mbedtls/md.h>
 #include <mbedtls/cipher.h>
+#include <monocypher.h>
 
 // --- HMAC-SHA256 ---
 
@@ -42,6 +43,7 @@
 inline bool rns_hmac_sha256(const uint8_t* key, size_t key_len,
                             const uint8_t* data, size_t data_len,
                             uint8_t out[32]) {
+    if (!out || (!key && key_len != 0) || (!data && data_len != 0)) return false;
     const mbedtls_md_info_t* md_info = mbedtls_md_info_from_type(MBEDTLS_MD_SHA256);
     if (!md_info) return false;
     return mbedtls_md_hmac(md_info, key, key_len, data, data_len, out) == 0;
@@ -70,7 +72,8 @@ inline bool rns_hkdf_sha256(uint8_t* out, size_t length,
                             const uint8_t* ikm, size_t ikm_len,
                             const uint8_t* salt, size_t salt_len,
                             const uint8_t* context, size_t context_len) {
-    if (length == 0 || length > 255 * 32) return false;
+    if (!out || !ikm || ikm_len == 0 || length == 0 || length > 255 * 32 ||
+        (!salt && salt_len != 0) || (!context && context_len != 0)) return false;
 
     // Extract phase: PRK = HMAC-SHA256(salt, ikm)
     uint8_t default_salt[32] = {0};
@@ -111,6 +114,8 @@ inline bool rns_hkdf_sha256(uint8_t* out, size_t length,
         input[off] = (uint8_t)((i + 1) & 0xFF);
 
         if (!rns_hmac_sha256(prk, 32, input.data(), input_len, block)) {
+            crypto_wipe(prk, sizeof(prk));
+            crypto_wipe(block, sizeof(block));
             return false;
         }
         block_len = 32;
@@ -120,7 +125,8 @@ inline bool rns_hkdf_sha256(uint8_t* out, size_t length,
         memcpy(out + derived_len, block, to_copy);
         derived_len += to_copy;
     }
-
+    crypto_wipe(prk, sizeof(prk));
+    crypto_wipe(block, sizeof(block));
     return true;
 }
 
@@ -128,23 +134,26 @@ inline bool rns_hkdf_sha256(uint8_t* out, size_t length,
 
 /** PKCS7 pad data to 16-byte blocks. Returns padded data. */
 inline std::vector<uint8_t> rns_pkcs7_pad(const uint8_t* data, size_t len) {
+    if (!data && len != 0) return {};
     size_t n = 16 - (len % 16);
     std::vector<uint8_t> padded(len + n);
-    memcpy(padded.data(), data, len);
+    if (len != 0) memcpy(padded.data(), data, len);
     memset(padded.data() + len, (uint8_t)n, n);
     return padded;
 }
 
-/** PKCS7 unpad. Returns unpadded length, or 0 on error. */
-inline size_t rns_pkcs7_unpad(const uint8_t* data, size_t len) {
-    if (len == 0) return 0;
+/** Validate PKCS7 padding and return the unpadded length. */
+inline bool rns_pkcs7_unpad(const uint8_t* data, size_t len, size_t& unpadded_len) {
+    unpadded_len = 0;
+    if (!data || len == 0) return false;
     uint8_t n = data[len - 1];
-    if (n == 0 || n > 16 || n > len) return 0;
+    if (n == 0 || n > 16 || n > len) return false;
     // Verify all padding bytes
     for (size_t i = 0; i < n; i++) {
-        if (data[len - 1 - i] != n) return 0;
+        if (data[len - 1 - i] != n) return false;
     }
-    return len - n;
+    unpadded_len = len - n;
+    return true;
 }
 
 // --- AES-256-CBC ---
@@ -162,6 +171,8 @@ inline size_t rns_pkcs7_unpad(const uint8_t* data, size_t len) {
 inline bool rns_aes256_cbc_encrypt(uint8_t* out, size_t& out_len,
                                    const uint8_t* plaintext, size_t in_len,
                                    const uint8_t key[32], const uint8_t iv[16]) {
+    out_len = 0;
+    if (!out || !plaintext || !key || !iv || in_len == 0 || (in_len % 16) != 0) return false;
     mbedtls_cipher_context_t ctx;
     mbedtls_cipher_init(&ctx);
     bool ok = false;
@@ -192,6 +203,8 @@ cleanup:
 inline bool rns_aes256_cbc_decrypt(uint8_t* out, size_t& out_len,
                                    const uint8_t* ciphertext, size_t in_len,
                                    const uint8_t key[32], const uint8_t iv[16]) {
+    out_len = 0;
+    if (!out || !ciphertext || !key || !iv || in_len == 0 || (in_len % 16) != 0) return false;
     mbedtls_cipher_context_t ctx;
     mbedtls_cipher_init(&ctx);
     bool ok = false;
@@ -231,10 +244,18 @@ static constexpr size_t RNS_FERNET_HMAC_SIZE = 32;
  */
 class RNSToken {
 public:
-    RNSToken() : _valid(false) {}
+    RNSToken() : _valid(false), _signing_key{0}, _encryption_key{0} {}
+    ~RNSToken() { clear(); }
+
+    RNSToken(const RNSToken&) = delete;
+    RNSToken& operator=(const RNSToken&) = delete;
 
     /** Initialize from a 64-byte derived key. */
     bool init(const uint8_t derived_key[64]) {
+        if (!derived_key) {
+            clear();
+            return false;
+        }
         memcpy(_signing_key, derived_key, 32);
         memcpy(_encryption_key, derived_key + 32, 32);
         _valid = true;
@@ -243,6 +264,12 @@ public:
 
     bool isValid() const { return _valid; }
 
+    void clear() {
+        crypto_wipe(_signing_key, sizeof(_signing_key));
+        crypto_wipe(_encryption_key, sizeof(_encryption_key));
+        _valid = false;
+    }
+
     /**
      * Encrypt plaintext into a Fernet token.
      * Token = [IV 16][ciphertext][HMAC-SHA256 32]
@@ -250,7 +277,7 @@ public:
      * @return encrypted token as vector, empty on failure
      */
     std::vector<uint8_t> encrypt(const uint8_t* plaintext, size_t plaintext_len) const {
-        if (!_valid) return {};
+        if (!_valid || (!plaintext && plaintext_len != 0)) return {};
 
         // Generate random IV
         uint8_t iv[16];
@@ -265,8 +292,10 @@ public:
         if (!rns_aes256_cbc_encrypt(ciphertext.data(), ct_len,
                                      padded.data(), padded.size(),
                                      _encryption_key, iv)) {
+            crypto_wipe(padded.data(), padded.size());
             return {};
         }
+        crypto_wipe(padded.data(), padded.size());
 
         // Build token: IV + ciphertext + HMAC
         std::vector<uint8_t> token(16 + ct_len + 32);
@@ -283,30 +312,29 @@ public:
         return token;
     }
 
-    /**
-     * Decrypt a Fernet token.
-     * @return decrypted plaintext, empty on failure or HMAC mismatch
-     */
-    std::vector<uint8_t> decrypt(const uint8_t* token, size_t token_len) const {
-        if (!_valid) return {};
+    /** Decrypt and authenticate a Fernet token, including valid empty plaintexts. */
+    bool decrypt(const uint8_t* token, size_t token_len, std::vector<uint8_t>& plaintext) const {
+        plaintext.clear();
+        if (!_valid || !token) return false;
         // Minimum: IV(16) + one_block(16) + HMAC(32) = 64
-        if (token_len < 64) return {};
+        if (token_len < 64) return false;
 
         const uint8_t* iv = token;
         size_t ct_len = token_len - 16 - 32;
+        if ((ct_len % 16) != 0) return false;
         const uint8_t* ciphertext = token + 16;
         const uint8_t* received_hmac = token + 16 + ct_len;
 
         // Verify HMAC
         uint8_t expected_hmac[32];
         if (!rns_hmac_sha256(_signing_key, 32, token, 16 + ct_len, expected_hmac)) {
-            return {};
+            return false;
         }
 
         // Constant-time comparison
-        uint8_t diff = 0;
-        for (int i = 0; i < 32; i++) diff |= received_hmac[i] ^ expected_hmac[i];
-        if (diff != 0) return {};
+        const bool authenticated = crypto_verify32(received_hmac, expected_hmac) == 0;
+        crypto_wipe(expected_hmac, sizeof(expected_hmac));
+        if (!authenticated) return false;
 
         // Decrypt
         std::vector<uint8_t> plaintext_padded(ct_len);
@@ -314,15 +342,26 @@ public:
         if (!rns_aes256_cbc_decrypt(plaintext_padded.data(), pt_len,
                                      ciphertext, ct_len,
                                      _encryption_key, iv)) {
-            return {};
+            return false;
         }
 
         // PKCS7 unpad
-        size_t unpadded_len = rns_pkcs7_unpad(plaintext_padded.data(), pt_len);
-        if (unpadded_len == 0 && pt_len > 0) return {};  // Padding error
+        size_t unpadded_len = 0;
+        if (!rns_pkcs7_unpad(plaintext_padded.data(), pt_len, unpadded_len)) {
+            crypto_wipe(plaintext_padded.data(), plaintext_padded.size());
+            return false;
+        }
 
-        return std::vector<uint8_t>(plaintext_padded.begin(),
-                                     plaintext_padded.begin() + unpadded_len);
+        plaintext.assign(plaintext_padded.begin(), plaintext_padded.begin() + unpadded_len);
+        crypto_wipe(plaintext_padded.data(), plaintext_padded.size());
+        return true;
+    }
+
+    /** Compatibility wrapper; an empty vector can represent success or failure. */
+    std::vector<uint8_t> decrypt(const uint8_t* token, size_t token_len) const {
+        std::vector<uint8_t> plaintext;
+        (void)decrypt(token, token_len, plaintext);
+        return plaintext;
     }
 
 private:

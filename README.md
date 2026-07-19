@@ -2,7 +2,7 @@
 
 A multi-interface [Reticulum](https://reticulum.network/) gateway firmware for ESP32-series microcontrollers. Routes packets transparently between WiFi (UDP), ESP-NOW, Serial KISS, Bluetooth Classic, LoRa, and amateur-radio (AX.25/APRS) interfaces.
 
-**Status:** Core routing, ESP-NOW mesh, and KISS-over-USB TNC mode confirmed working on real hardware (ESP32-C3-DevKitM-1).
+**Status:** Software release candidate for controlled pilots. Core routing, ESP-NOW mesh, and KISS-over-USB TNC mode have been exercised on ESP32-C3 hardware. Broad or unattended production deployment remains blocked on the hardware-security, HIL, manufacturing, and regulatory gates in `docs/PRODUCTION_READINESS.md`.
 
 ---
 
@@ -12,17 +12,17 @@ A multi-interface [Reticulum](https://reticulum.network/) gateway firmware for E
 - **ESP-NOW mesh** — automatic peer discovery via announce packets; zero-config wireless mesh between ESP32 nodes
 - **KISS-over-USB TNC** — use an ESP32-C3 as a USB-connected TNC for desktop Reticulum instances
 - **Announce-based routing** — distance-vector routing with 16-byte destination hashes, hop counting, and automatic route expiry
-- **Reliable links** — optional ACK-based transport layer with retransmission
+- **Authenticated encrypted links** — Reticulum-compatible X25519/Ed25519 handshake and Fernet session encryption
 - **LoRa support** — long-range radio via SX1278-compatible modules (Heltec LoRa32 v3)
-- **HAM radio** — AX.25/APRS framing and AFSK audio modem for amateur packet radio
-- **Web UI & REST API** — optional runtime configuration, OTA updates, and metrics endpoint
+- **Experimental HAM radio** — AX.25/APRS framing and AFSK components for development builds; not production-qualified
+- **HTTP REST API** — optional runtime configuration, signed OTA updates, and metrics endpoint
 - **Multi-platform** — builds for ESP32, ESP32-C3, ESP32-S2, ESP32-S3, and Heltec LoRa boards
 
 ## Supported Hardware
 
 | Board | Environment | Notes |
 |---|---|---|
-| ESP32-C3-DevKitM-1 | `esp32-c3-devkitm-1` | Default target, USB Serial/JTAG CDC |
+| ESP32-C3-DevKitM-1 | `esp32-c3-prod-managed` | Canonical managed production target |
 | ESP32-C3 (KISS TNC) | `esp32-c3-kiss-usb` | USB = KISS port, debug on UART1 GPIO2/4 |
 | ESP32 (original) | `esp32dev` | Bluetooth Classic available |
 | ESP32-S2-Saola-1 | `esp32-s2-devkitm-1` | |
@@ -44,7 +44,7 @@ A multi-interface [Reticulum](https://reticulum.network/) gateway firmware for E
 git clone https://github.com/AkitaEngineering/ESP32-C3-Reticulum-Node
 cd ESP32-C3-Reticulum-Node
 
-# Build the default production USB/KISS environment
+# Build the canonical managed production environment
 pio run
 
 # Flash a dev/debug build to a connected board
@@ -54,22 +54,21 @@ pio run -e esp32-c3-devkitm-1 -t upload
 pio device monitor -b 115200
 ```
 
-### Configure WiFi
+### Configure a production unit
 
-Edit `src/Config.cpp`:
+Generate a unique per-device config with WiFi credentials, API token, and OTA public key. Provision the generated file as `/config.json` in SPIFFS before the unit is connected to its field network. Production firmware deliberately disables unauthenticated network bootstrap.
 
-```cpp
-const char *WIFI_SSID     = "your_ssid";
-const char *WIFI_PASSWORD = "your_password";
+```bash
+./tools/make_device_config.py --device-id RNS-000001 --node-name field-001 \
+  --wifi-ssid field-net --wifi-password "$WIFI_PASSWORD" \
+  --api-public-key "$OTA_PUBLIC_KEY"
 ```
-
-WiFi is used for UDP transport and to set the ESP-NOW channel. Nodes on the same WiFi network discover each other automatically.
 
 ### Two-Node ESP-NOW Mesh
 
 1. Flash two boards with the default environment (same WiFi credentials)
 2. Power both boards and open serial monitors
-3. Within ~180 seconds they exchange announce packets and add each other as ESP-NOW peers
+3. Within about 35 seconds they exchange announce packets and add each other as ESP-NOW peers
 4. Packets sent to one node's destination hash are relayed wirelessly to the other
 
 ### KISS-over-USB TNC Mode
@@ -106,13 +105,14 @@ Example Reticulum configuration (`~/.reticulum/config`):
 
 | Environment | Purpose |
 |---|---|
+| `esp32-c3-prod-managed` | **Default/canonical:** USB KISS, ESP-NOW, WiFi UDP, authenticated API, metrics, signed OTA |
 | `esp32-c3-devkitm-1` | Default dev/debug build (USB CDC, debug enabled) |
 | `esp32-c3-kiss-usb` | KISS TNC over USB CDC |
 | `esp32-c3-demo-sender` | Sends periodic test packets (demo mode) |
 | `esp32-c3-prod` | Production build (`-Os`, no debug, no demo traffic) |
 | `esp32-c3-prod-usb` | Production USB/KISS build with runtime JSON naming config enabled |
 | `esp32-c3-prod-metrics` | Production + metrics/heartbeat endpoint |
-| `esp32-c3-web` | Web UI, REST API, OTA, JSON config |
+| `esp32-c3-web` | HTTP REST API, OTA, JSON config |
 | `esp32-c3-debug` | WiFi disabled, `-Og` debug optimizations |
 | `esp32-c3-minimal` | Minimal main (build sanity check) |
 | `esp32-c3-kiss-usb-test` | Progressive USB subsystem isolation test |
@@ -132,20 +132,24 @@ pio run -e esp32-c3-devkitm-1
 
 ### Runtime JSON Config
 
-The default production target is `esp32-c3-prod-usb`. It reads `/config.json` from SPIFFS at boot for runtime naming.
+The default production target is `esp32-c3-prod-managed`. It reads `/config.json` from SPIFFS before network initialization.
 
 - `node_name`: optional. Leave empty to use the per-device MAC-derived default such as `rns-6497AC`.
 - `rns_app_name`: optional Reticulum application name. Defaults to `esp32.node`.
-- `data/config.json`: the filesystem image uploaded by PlatformIO.
+- `wifi.ssid` / `wifi.password`: boot-time WiFi station credentials.
+- `api.token`: required per-device API token (at least 32 characters).
+- `api.public_key`: required 32-byte Ed25519 OTA public key in hex.
 - `data/config.example.json`: editable template for provisioning or per-device variants.
 
-Update runtime naming without rebuilding firmware:
+For a factory filesystem upload, temporarily stage the generated file as the ignored `data/config.json`, upload it, and remove the staged copy:
 
 ```bash
-pio run -e esp32-c3-prod-usb -t uploadfs --upload-port /dev/serial/by-id/<board>
+cp provisioning/devices/RNS-000001.config.json data/config.json
+pio run -e esp32-c3-prod-managed -t uploadfs --upload-port /dev/serial/by-id/<board>
+rm data/config.json
 ```
 
-Only the runtime naming keys above are consumed by the current production build. Other keys in the JSON document are used by web/provisioning paths when those features are enabled.
+Do not commit generated configs or manifests; both contain credentials and are ignored by Git.
 
 ## Project Structure
 
@@ -158,11 +162,11 @@ src/                  Firmware source code
   KISS.cpp            KISS protocol encoder/decoder
   ReticulumPacket.cpp Packet serialization/deserialization
   RoutingTable.cpp    Route storage & announce-based discovery
-  Link.cpp            Reliable transport layer
+  Link.cpp            Authenticated encrypted link sessions
   LinkManager.cpp     Link lifecycle management
   AX25.cpp            AX.25 frame encoding
   AudioModem.cpp      AFSK audio modem
-  WebServer.cpp       REST API & Web UI
+  WebServer.cpp       HTTP REST API and signed OTA
   Config.cpp          Runtime JSON configuration
   Utils.cpp           Utility functions
   Winlink.cpp         Experimental Winlink-style message adapter
@@ -186,10 +190,10 @@ All compile-time settings are in `include/Config.h`. Key parameters:
 
 | Parameter | Default | Description |
 |---|---|---|
-| `WIFI_SSID` / `WIFI_PASSWORD` | — | WiFi credentials |
-| `UDP_PORT` | 4242 | Reticulum UDP transport port |
-| `ANNOUNCE_INTERVAL_MS` | 180000 | Announce broadcast interval (ms) |
-| `MAX_HOPS` | 15 | Maximum packet hop count |
+| `wifi.ssid` / `wifi.password` | — | Runtime WiFi credentials in `/config.json` |
+| `RNS_UDP_PORT` | 4242 | Reticulum UDP transport port |
+| `ANNOUNCE_INTERVAL_MS` | 30000 | Announce broadcast interval (ms) |
+| `MAX_HOPS` | 128 | Maximum packet hop count |
 | `MAX_ROUTES` | 20 | Maximum routing table entries |
 | `KISS_SERIAL_SPEED` | 115200 | KISS UART baud rate |
 
@@ -200,17 +204,17 @@ Build flags control feature inclusion:
 | `-DDEBUG_ENABLED=1` | Enable verbose serial debug output |
 | `-DKISS_OVER_USB=1` | USB CDC = KISS port, debug on UART1 |
 | `-DDEMO_TRAFFIC_ENABLED=1` | Send periodic test packets |
-| `-DWEBSERVER_ENABLED=1` | Enable Web UI & REST API |
+| `-DWEBSERVER_ENABLED=1` | Enable the HTTP REST API |
 | `-DJSON_CONFIG_ENABLED=1` | Runtime JSON config (SPIFFS) |
 | `-DOTA_ENABLED=1` | Signed OTA firmware updates |
 | `-DLORA_ENABLED=1` | Enable LoRa radio interface |
-| `-DHAM_MODEM_ENABLED=1` | Enable HAM radio TNC interface |
+| `-DHAM_MODEM_ENABLED=1` | Enable experimental HAM components; rejected by `PRODUCTION_BUILD` |
 | `-DMETRICS_ENABLED=1` | Enable /metrics endpoint |
 | `-DBLE_PROVISIONING_ENABLED=1` | Reserved for BLE GATT provisioning; not included in production builds |
 
 ## Debug Commands
 
-Send a local command packet (context `0xFE`) over the serial or Bluetooth KISS interface. Payload format: `[8-byte dest address (zeros = self)] [ASCII command]`
+Send a local command packet (context `0xB0`) over the serial or Bluetooth KISS interface. This node-specific context is consumed locally and is never forwarded. Payload format: `[8-byte dest address (zeros = self)] [ASCII command]`
 
 | Command | Response |
 |---|---|
@@ -225,8 +229,8 @@ Send a local command packet (context `0xFE`) over the serial or Bluetooth KISS i
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | System architecture and data flows |
 | [docs/PACKET_FORMATS.md](docs/PACKET_FORMATS.md) | Reticulum wire format specification |
 | [docs/KISS_INTERFACE.md](docs/KISS_INTERFACE.md) | KISS protocol implementation details |
-| [docs/LINK_LAYER.md](docs/LINK_LAYER.md) | Reliable transport layer |
-| [docs/API.md](docs/API.md) | Web UI / REST API reference |
+| [docs/LINK_LAYER.md](docs/LINK_LAYER.md) | Authenticated encrypted link sessions and limitations |
+| [docs/API.md](docs/API.md) | HTTP REST API reference |
 | [docs/HAM_MODEM.md](docs/HAM_MODEM.md) | Amateur radio interface guide |
 | [docs/IPFS_INTEGRATION.md](docs/IPFS_INTEGRATION.md) | IPFS content addressing |
 | [docs/ENHANCED_FEATURES.md](docs/ENHANCED_FEATURES.md) | Advanced features documentation |

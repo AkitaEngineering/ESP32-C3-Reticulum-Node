@@ -71,6 +71,7 @@ public:
     RNSLink(const uint8_t link_id[16],
             const uint8_t peer_pub[32],
             const uint8_t peer_sig_pub[32],
+            InterfaceType attachedInterface,
             LinkManager& owner,
             RNSCrypto& identity);
 
@@ -86,7 +87,7 @@ public:
 
     // --- Core operations ---
     bool establish();
-    void handlePacket(const RnsPacketInfo& packetInfo);
+    void handlePacket(const RnsPacketInfo& packetInfo, InterfaceType incomingInterface);
     bool sendData(const uint8_t* data, size_t len);
     void close(bool notifyPeer = true);
     void checkTimeouts();
@@ -101,14 +102,16 @@ public:
     // --- Crypto operations for link data ---
     std::vector<uint8_t> encrypt(const uint8_t* plaintext, size_t len);
     std::vector<uint8_t> decrypt(const uint8_t* ciphertext, size_t len);
+    bool decrypt(const uint8_t* ciphertext, size_t len, std::vector<uint8_t>& plaintext);
     void sign(uint8_t signature[64], const uint8_t* message, size_t msg_len);
 
     // --- Handshake (called by LinkManager) ---
     bool handshake();
     bool prove();
     bool validateProof(const uint8_t* proof_data, size_t proof_len,
-                       const uint8_t* raw_packet, size_t raw_len);
-    void handleRTT(const uint8_t* data, size_t len);
+                       InterfaceType incomingInterface);
+    bool handleRTT(const uint8_t* data, size_t len);
+    bool setMtu(uint32_t mtu);
 
     // --- Signalling helpers (public for LinkManager) ---
     static void buildSignallingBytes(uint8_t out[3], uint32_t mtu, uint8_t mode);
@@ -146,7 +149,7 @@ private:
     uint8_t _dest_pub_key[64];
 
     // Derived keys from HKDF after ECDH
-    uint8_t _derived_key[64];
+    uint8_t _derived_key[64] = {0};
     bool _keys_derived;
 
     // Fernet token for link encryption
@@ -155,6 +158,7 @@ private:
     // MTU/mode
     uint32_t _mtu;
     uint8_t _mode;
+    InterfaceType _attachedInterface;
 
     // Timing
     unsigned long _lastActivityTime;

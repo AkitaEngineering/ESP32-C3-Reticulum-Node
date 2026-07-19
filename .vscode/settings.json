@@ -1,10 +1,39 @@
 {
+    "files.exclude": {
+        "**/.pio": true,
+        "**/.venv": true,
+        "**/build": true,
+        "**/build-*": true,
+        "**/cmake-build-*": true,
+        "**/tmp_capture": true
+    },
+    "search.exclude": {
+        "**/.pio/**": true,
+        "**/.venv/**": true,
+        "**/build/**": true,
+        "**/build-*/**": true,
+        "**/cmake-build-*/**": true,
+        "**/tmp_capture/**": true
+    },
+    "files.watcherExclude": {
+        "**/.pio/**": true,
+        "**/.venv/**": true,
+        "**/build/**": true,
+        "**/build-*/**": true,
+        "**/cmake-build-*/**": true,
+        "**/tmp_capture/**": true
+    },
+    "C_Cpp.default.browse.path": [
+        "${workspaceFolder}/include",
+        "${workspaceFolder}/src",
+        "${workspaceFolder}/test"
+    ],
+    "C_Cpp.default.browse.limitSymbolsToIncludedHeaders": true,
     "python-envs.pythonProjects": [
         {
             "path": ".",
             "envManager": "ms-python.python:venv",
             "packageManager": "ms-python.python:pip"
         }
-    ],
-    "idf.currentSetup": "/home/shaun/.platformio/packages/framework-espidf"
+    ]
 }

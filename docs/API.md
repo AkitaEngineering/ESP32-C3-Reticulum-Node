@@ -1,14 +1,15 @@
 ## Web API (REST) - ESP32 Reticulum Gateway
 
-This document describes the HTTP API exposed by the device when the Web UI is enabled (`WEBSERVER_ENABLED=1`).
+This document describes the HTTP API exposed by the device when `WEBSERVER_ENABLED=1`. The firmware does not serve a browser UI.
 
 All endpoints are served on HTTP (port defined by `WEBSERVER_PORT`) and use simple JSON where applicable.
 
 Authentication
-- The API uses Bearer token authentication when `WEBSERVER_AUTH_ENABLED=1` and a token is configured in the runtime JSON config.
-- If no config file exists, selected bootstrap endpoints allow initial configuration without authentication.
-- If `/config.json` exists with an empty token or the placeholder token `CHANGE_ME_generate_a_strong_token`, authenticated endpoints fail closed. Replace the placeholder with a strong per-device token before enabling the Web UI in the field.
+- The API uses an opaque Bearer token when `WEBSERVER_AUTH_ENABLED=1`. The scheme must be exactly `Authorization: Bearer <token>`; a raw token is rejected.
+- Development builds may allow selected first-boot endpoints without authentication. `PRODUCTION_BUILD=1` disables this path.
+- If `/config.json` exists with an empty token or the placeholder token `CHANGE_ME_generate_a_strong_token`, authenticated endpoints fail closed. Replace the placeholder with a strong per-device token before enabling the API in the field.
 - Header: `Authorization: Bearer <token>`
+- Duplicate `Authorization`, `X-Signature-Ed25519`, `X-Firmware-Version`, or `Content-Length` headers are rejected. Folded headers and `Transfer-Encoding` are not supported.
 
 Common response codes
 - `200 OK` – success
@@ -17,47 +18,58 @@ Common response codes
 - `401 Unauthorized` – missing/invalid auth
 - `403 Forbidden` – invalid signature or forbidden action
 - `404 Not Found` – resource not present
+- `408 Request Timeout` – request body or OTA stream incomplete/inactive
+- `409 Conflict` – OTA version is not newer
+- `411 Length Required` – POST omitted `Content-Length`
+- `413 Content Too Large` – non-OTA body exceeds the configured limit
 - `500 Internal Server Error` – server error
 
 Endpoints
 
 - `GET /api/v1/status`
   - Returns JSON with node status metrics, provisioning state, and per-interface health snapshots (uptime, free heap, link counts, route count, stable device ID, config presence, bootstrap mode, WiFi state, restart-required state, interface support/usability, packet counters, and last RX/TX uptime timestamps).
-  - Auth: required unless the device is in first-time bootstrap mode.
+  - Auth: always required in production.
 
 - `GET /api/v1/routes`
   - Returns grouped route diagnostics by destination, including all candidate paths, the currently selected path, and the effective interface-priority policy used for tie-breaks.
   - Auth: required.
 
 - `GET /api/v1/config`
-  - Returns the runtime JSON configuration (from `/config.json` in SPIFFS) or a default template when not present.
-  - Auth: required unless the device is in first-time bootstrap mode.
+  - Returns runtime configuration with `wifi.password` and `api.token` redacted.
+  - Auth: always required in production.
   - Response: JSON config document.
   - Routing policy: `routing.interface_priority` can override interface tie-break priorities at runtime without rebuilding firmware.
 
 - `POST /api/v1/config`
-  - Accepts a JSON body and writes it to `/config.json` when `JSON_CONFIG_ENABLED=1`.
+  - Accepts a complete JSON config object and writes it to `/config.json` when `JSON_CONFIG_ENABLED=1`.
   - If `wifi` credentials are present in the JSON they will be applied immediately (`WiFi.begin(...)`).
   - Response headers:
     - `X-Restart-Required: true|false` — indicates whether the saved configuration includes changes that require a reboot to take full effect.
     - `X-Restart-Reason: <reason>` — currently returned when `rns_app_name` changed and the running node still uses the previous application name.
-  - Auth: required when a token exists.
-  - First-time bootstrap is allowed only when no `/config.json` exists.
-  - Returns the saved JSON on success.
+  - Auth: required when a token exists. Managed production configuration requires `api.auth_enabled=true`, a non-placeholder 32–128 character token, and a non-zero 32-byte Ed25519 public key.
+  - WiFi passwords must be empty (explicit open network), an 8–63 character printable WPA passphrase, or a 64-digit hexadecimal PSK. Managed production also requires a non-empty SSID.
+  - Production requires factory provisioning and rejects unauthenticated first-time bootstrap.
+  - Writes are validated and committed through a verified temporary file; the response never echoes secrets.
 
 - `POST /api/v1/config/save`
   - Saves the currently staged runtime config; returns `saved` or `no config to save`.
   - Auth: required.
+
+- `POST /api/v1/restart`
+  - Persists the node address and packet counter, returns `restarting`, then performs a controlled restart.
+  - Auth: required. Send `Content-Length: 0` when no body is needed.
 
 - `POST /api/v1/ota`
   - Signed OTA upload endpoint (enabled with `OTA_ENABLED=1`).
   - Uploads are streamed to a temporary file in SPIFFS, hashed with SHA-512 while streaming, verified using Ed25519 signature, then flashed via `Update`.
   - Required headers:
     - `Content-Length: <bytes>`
-    - `X-Signature-Ed25519: <hex_signature>` — Ed25519 signature of the 64-byte `SHA-512(firmware.bin)` digest
+    - `X-Firmware-Version: <MAJOR.MINOR.PATCH>` — must be newer than the running version
+    - `X-Signature-Ed25519: <hex_signature>` — Ed25519 signature of `SHA-512("RNS-OTA-V1\\0" || version || "\\0" || firmware.bin)`
     - Authorization: Bearer token (if enabled)
   - The public key used to verify signatures is read from the runtime JSON config (`api.public_key`).
   - On signature verification failure the endpoint returns `403 Invalid signature`.
+  - The upload permits at most 10 seconds without receiving bytes and at most 5 minutes total; an incomplete/timed-out upload returns `408` and the staging file is removed.
 
 Notes & Examples
 - To GET the config (example):
@@ -76,11 +88,12 @@ curl -X POST -H "Content-Type: application/json" -H "Authorization: Bearer ${TOK
 - To upload signed OTA (high-level example):
 
 ```bash
-# Build firmware -> firmware.bin, sign SHA-512(firmware.bin) with your Ed25519 private key -> signature.hex
-./tools/sign_firmware.sh firmware.bin keys/ota-ed25519.pem signature.hex
+# Build and version-bind the signed firmware digest
+./tools/sign_firmware.sh 0.3.1 firmware.bin keys/ota-ed25519.pem signature.hex
 
 curl -X POST \
   -H "Authorization: Bearer ${TOKEN}" \
+  -H "X-Firmware-Version: 0.3.1" \
   -H "X-Signature-Ed25519: $(cat signature.hex)" \
   --data-binary @firmware.bin \
   http://<device-ip>:<port>/api/v1/ota
@@ -88,7 +101,8 @@ curl -X POST \
 
 Implementation notes
 - The implementation verifies uploaded image size and hashes the upload as it streams, avoiding full-image RAM allocation on ESP32-C3.
-- If you plan to integrate tooling for OTA automation, use the `api.public_key` field in your device config for signature verification.
+- `api.public_key_id` is the first 16 hexadecimal characters of SHA-256 over the raw 32-byte Ed25519 public key. `tools/make_device_config.py` and `tools/package_release.py` use the same rule.
+- The API is plaintext HTTP. Put it behind a trusted, encrypted management boundary and never expose it directly to an untrusted LAN or the Internet.
 
 OpenAPI and CLI helpers
 - An OpenAPI v3 description is provided in `docs/openapi.yaml` for tooling and SDK generation.
@@ -248,7 +262,7 @@ API request/response schemas
 - `POST /api/v1/config` request: any valid JSON object matching your runtime config. Response is the saved JSON document on success.
 - `POST /api/v1/config` also returns `X-Restart-Required` and, when applicable, `X-Restart-Reason` so provisioning tools can prompt for a controlled restart instead of assuming every saved change applied live.
 
-- `POST /api/v1/ota` request: binary body, header `X-Signature-Ed25519` required with hex Ed25519 signature over `SHA-512(firmware.bin)`. Responses: `200` (ok), `400` (bad upload), `403` (invalid signature).
+- `POST /api/v1/ota` request: binary body with required `X-Firmware-Version` and `X-Signature-Ed25519` headers. The signature is Ed25519 over `SHA-512("RNS-OTA-V1\\0" || version || "\\0" || firmware.bin)`. Responses: `200` (ok), `400` (bad upload/version), `403` (invalid signature), or `409` (same/older version).
 
 - `GET /api/v1/metrics` returns a compact JSON metrics payload including heap, uptime, link counts, route counts, and the same `interfaces` health snapshot object used by `/api/v1/status` when `METRICS_ENABLED=1`.
 
@@ -262,7 +276,7 @@ Examples
 - OTA upload
 
 ```bash
-./tools/ota_upload.sh 192.168.4.1 80 "$TOKEN" firmware.bin signature.hex
+./tools/ota_upload.sh 192.168.4.1 80 "$TOKEN" 0.3.1 firmware.bin signature.hex
 ```
 
 

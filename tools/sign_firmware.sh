@@ -1,22 +1,29 @@
 #!/usr/bin/env bash
 # Sign firmware for the production OTA endpoint.
 #
-# The device verifies Ed25519(signature, SHA-512(firmware.bin)).
-# This keeps verification constant-memory on small ESP32-C3 targets.
+# The device verifies Ed25519(signature,
+# SHA-512("RNS-OTA-V1\\0" || version || "\\0" || firmware.bin)).
+# The signed version enables replay/downgrade rejection.
 #
 # Usage:
-#   ./tools/sign_firmware.sh <firmware.bin> <ed25519-private-key.pem> <signature.hex>
+#   ./tools/sign_firmware.sh <version> <firmware.bin> <ed25519-private-key.pem> <signature.hex>
 
 set -euo pipefail
 
-if [ "$#" -ne 3 ]; then
-  echo "Usage: $0 <firmware.bin> <ed25519-private-key.pem> <signature.hex>"
+if [ "$#" -ne 4 ]; then
+  echo "Usage: $0 <version> <firmware.bin> <ed25519-private-key.pem> <signature.hex>"
   exit 2
 fi
 
-FIRMWARE="$1"
-PRIVATE_KEY="$2"
-SIGNATURE_HEX="$3"
+VERSION="$1"
+FIRMWARE="$2"
+PRIVATE_KEY="$3"
+SIGNATURE_HEX="$4"
+
+if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "Version must use MAJOR.MINOR.PATCH format" >&2
+  exit 2
+fi
 
 if [ ! -f "$FIRMWARE" ]; then
   echo "Firmware file not found: $FIRMWARE" >&2
@@ -41,7 +48,7 @@ trap 'rm -rf "$TMP_DIR"' EXIT
 DIGEST_BIN="$TMP_DIR/firmware.sha512.bin"
 SIGNATURE_BIN="$TMP_DIR/signature.bin"
 
-openssl dgst -sha512 -binary "$FIRMWARE" > "$DIGEST_BIN"
+{ printf 'RNS-OTA-V1\0%s\0' "$VERSION"; cat "$FIRMWARE"; } | openssl dgst -sha512 -binary > "$DIGEST_BIN"
 openssl pkeyutl -sign -rawin -inkey "$PRIVATE_KEY" -in "$DIGEST_BIN" -out "$SIGNATURE_BIN"
 xxd -p -c 256 "$SIGNATURE_BIN" > "$SIGNATURE_HEX"
 

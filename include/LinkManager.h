@@ -39,13 +39,13 @@ public:
      * Handle an incoming LINKREQUEST packet_type=0x02.
      * Creates a new RNSLink as responder, performs handshake, and sends proof.
      */
-    void handleLinkRequest(const RnsPacketInfo& packetInfo, const uint8_t* raw, size_t rawLen);
+    void handleLinkRequest(const RnsPacketInfo& packetInfo, InterfaceType interface);
 
     /**
      * Handle an incoming LRPROOF (or other link-addressed packet).
      * Routes to existing link by destination hash (which is the link_id).
      */
-    void handleLinkPacket(const RnsPacketInfo& packetInfo);
+    void handleLinkPacket(const RnsPacketInfo& packetInfo, InterfaceType interface);
 
     /** Periodically check all links for timeouts. */
     void checkAllTimeouts();
@@ -56,10 +56,21 @@ public:
     /** Number of active links. */
     size_t getActiveLinkCount() const;
 
+    /** True when this node owns the addressed link. */
+    bool hasLink(const uint8_t link_id[16]) const;
+
+    /** Start an outgoing link using a destination hash and announced public key. */
+    bool establishLink(const uint8_t dest_hash[16], const uint8_t dest_pub_key[64],
+                       uint8_t out_link_id[16] = nullptr);
+
+    /** Send application data over an established link. */
+    bool sendLinkData(const uint8_t link_id[16], const uint8_t* data, size_t len);
+
     // --- Methods for RNSLink instances ---
     const uint8_t* getNodeAddress() const;
     uint16_t getNextPacketId();
-    void sendPacketRaw(const uint8_t* buffer, size_t len, const uint8_t* destination);
+    void sendPacketRaw(const uint8_t* buffer, size_t len, const uint8_t* destination,
+                       InterfaceType interface = InterfaceType::UNKNOWN);
     void processReceivedLinkData(const uint8_t* link_id, const std::vector<uint8_t>& data);
     RNSCrypto& getIdentity();
 
@@ -71,6 +82,7 @@ private:
     ReticulumNode& _ownerRef;
 
     LinkPtr findLink(const uint8_t link_id[16]);
+    std::shared_ptr<const RNSLink> findLink(const uint8_t link_id[16]) const;
     void pruneClosedLinks();
 };
 

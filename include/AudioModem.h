@@ -18,7 +18,7 @@ public:
         AFSK_2400   // AFSK 2400 baud (future)
     };
     
-    AudioModem(ModemType type = ModemType::BELL_202);
+    explicit AudioModem(ModemType type = ModemType::BELL_202);
     ~AudioModem();
     
     // Initialize audio modem
@@ -71,23 +71,10 @@ private:
     bool _transmitting;
     bool _receiving;
     
-    // Transmit state
-    size_t _txBitIndex;
-    size_t _txByteIndex;
-    std::vector<uint8_t> _txBuffer;
-    uint32_t _txSampleIndex;
-    
     // Receive state
     std::vector<uint8_t> _rxBuffer;  // HDLC decoded frame bytes
-    size_t _rxBufferIndex;
-    uint32_t _rxSampleIndex;
-    bool _rxBitState;
-    uint8_t _rxByte;
-    uint8_t _rxBitCount;
-    
+
     // Demodulation state
-    float _lastSample;
-    float _filterState;
     Goertzel _goertzelMark;
     Goertzel _goertzelSpace;
     uint16_t _sampleCount;
@@ -99,16 +86,6 @@ private:
     bool _nrziInitialized;
     std::queue< std::vector<uint8_t> > _rxFrames;
     
-    // Generate audio sample for current bit
-    int16_t generateSample(uint8_t bit);
-    
-    // Demodulate bit from audio sample
-    bool demodulateBit(int16_t sample);
-    
-    // NRZI encoding/decoding
-    uint8_t nrziEncode(uint8_t bit, uint8_t& lastBit);
-    uint8_t nrziDecode(uint8_t bit, uint8_t& lastBit);
-
     // Bit processing helpers
     void processDecodedBit(uint8_t bit);
     void finalizeFrame();

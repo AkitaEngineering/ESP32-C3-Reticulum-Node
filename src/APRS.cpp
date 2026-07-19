@@ -14,10 +14,17 @@ void APRS::encodeBase91(uint32_t value, char* output, size_t width) {
 }
 
 void APRS::degreesToAPRS(float degrees, bool isLatitude, char* output) {
+    if (!output || !isfinite(degrees)) return;
+    const float limit = isLatitude ? 90.0f : 180.0f;
+    degrees = fminf(fmaxf(degrees, -limit), limit);
     bool negative = degrees < 0;
     degrees = fabsf(degrees);
     int deg = (int)degrees;
-    float minutes = (degrees - deg) * 60.0f;
+    float minutes = roundf((degrees - deg) * 6000.0f) / 100.0f;
+    if (minutes >= 60.0f) {
+        minutes = 0.0f;
+        if (deg < static_cast<int>(limit)) ++deg;
+    }
 
     if (isLatitude) {
         snprintf(output, 9, "%02d%05.2f%c", deg, minutes, negative ? 'S' : 'N');
@@ -27,14 +34,23 @@ void APRS::degreesToAPRS(float degrees, bool isLatitude, char* output) {
 }
 
 float APRS::aprsToDegrees(const char* data, bool isLatitude) {
-    if (!data) return 0.0f;
+    if (!data) return NAN;
     int deg = 0;
     float minutes = 0.0f;
     char hemisphere = 0;
 
+    const size_t degreeDigits = isLatitude ? 2 : 3;
+    const size_t expectedLen = degreeDigits + 6;
+    if (strlen(data) != expectedLen) return NAN;
+    for (size_t i = 0; i < degreeDigits + 2; ++i) {
+        if (data[i] < '0' || data[i] > '9') return NAN;
+    }
+    if (data[degreeDigits + 2] != '.' ||
+        data[degreeDigits + 3] < '0' || data[degreeDigits + 3] > '9' ||
+        data[degreeDigits + 4] < '0' || data[degreeDigits + 4] > '9') return NAN;
+
     if (isLatitude) {
         // Format: DDMM.MMH
-        if (strlen(data) < 8) return 0.0f;
         char degBuf[3] = {data[0], data[1], 0};
         deg = atoi(degBuf);
         char minBuf[6] = {data[2], data[3], data[4], data[5], data[6], 0};
@@ -42,7 +58,6 @@ float APRS::aprsToDegrees(const char* data, bool isLatitude) {
         hemisphere = data[7];
     } else {
         // Format: DDDMM.MMH
-        if (strlen(data) < 9) return 0.0f;
         char degBuf[4] = {data[0], data[1], data[2], 0};
         deg = atoi(degBuf);
         char minBuf[6] = {data[3], data[4], data[5], data[6], data[7], 0};
@@ -50,12 +65,23 @@ float APRS::aprsToDegrees(const char* data, bool isLatitude) {
         hemisphere = data[8];
     }
 
+    const bool validHemisphere = isLatitude ? (hemisphere == 'N' || hemisphere == 'S')
+                                             : (hemisphere == 'E' || hemisphere == 'W');
+    const int maxDegrees = isLatitude ? 90 : 180;
+    if (!validHemisphere || minutes >= 60.0f || deg > maxDegrees ||
+        (deg == maxDegrees && minutes > 0.0f)) return NAN;
+
     float result = deg + minutes / 60.0f;
     if (hemisphere == 'S' || hemisphere == 'W') result = -result;
     return result;
 }
 
 void APRS::formatPosition(const Position& pos, char* output, bool compressed) {
+    if (!output) return;
+    if (!isfinite(pos.latitude) || !isfinite(pos.longitude)) {
+        output[0] = 0;
+        return;
+    }
     if (compressed) {
         float latitude = fminf(fmaxf(pos.latitude, -90.0f), 90.0f);
         float longitude = fminf(fmaxf(pos.longitude, -180.0f), 180.0f);
@@ -92,39 +118,48 @@ void APRS::formatPosition(const Position& pos, char* output, bool compressed) {
     // Append course/speed if nonzero
     if (pos.course > 0 || pos.speed > 0) {
         char ext[16];
-        snprintf(ext, sizeof(ext), "%03u/%03u", pos.course % 360, pos.speed);
+        snprintf(ext, sizeof(ext), "%03u/%03u",
+                 static_cast<unsigned>(pos.course % 360),
+                 static_cast<unsigned>(pos.speed > 999 ? 999 : pos.speed));
         strcat(output, ext);
     }
 }
 
 void APRS::formatWeather(const Weather& weather, char* output) {
     // APRS positionless weather: _DDD/SSSgGGGtTTTrRRRp...
-    int windDir = ((int)weather.windDirection) % 360;
-    int windSpd = (int)weather.windSpeed;
-    int gust = (int)weather.gustSpeed;
-    int temp = (int)weather.temperature;
-    int rain1h = (int)(weather.rainfall1h * 100);
-    int rain24h = (int)(weather.rainfall24h * 100);
-    int humidity = (int)weather.humidity;
-    int pressure = (int)(weather.pressure * 10);
+    if (!output) return;
+    int windDir = constrain((int)lroundf(weather.windDirection), 0, 359);
+    int windSpd = constrain((int)lroundf(weather.windSpeed), 0, 999);
+    int gust = constrain((int)lroundf(weather.gustSpeed), 0, 999);
+    int temp = constrain((int)lroundf(weather.temperature), -99, 999);
+    int rain1h = constrain((int)lroundf(weather.rainfall1h * 100), 0, 999);
+    int rain24h = constrain((int)lroundf(weather.rainfall24h * 100), 0, 999);
+    int humidity = constrain((int)lroundf(weather.humidity), 0, 100);
+    int pressure = constrain((int)lroundf(weather.pressure * 10), 0, 99999);
 
     snprintf(output, 80, "_%03d/%03dg%03dt%03dr%03dp%03dh%02db%05d",
              windDir, windSpd, gust, temp, rain1h, rain24h,
-             humidity % 100, pressure);
+             humidity == 100 ? 0 : humidity, pressure);
 }
 
 bool APRS::parsePosition(const char* data, Position& pos) {
     if (!data) return false;
     size_t len = strlen(data);
     // Expect: !DDMM.MMN/DDDMM.MME... or =DDMM.MMN/DDDMM.MME...
-    if (len < 19) return false;
     const char* p = data;
-    if (*p == '!' || *p == '=' || *p == '/') p++; // skip data type indicator
+    if (*p == '!' || *p == '=' || *p == '/') {
+        if (len < 20) return false;
+        p++; // skip data type indicator
+    } else if (len < 19) {
+        return false;
+    }
 
     // Latitude: 8 chars
     char latStr[9];
     memcpy(latStr, p, 8); latStr[8] = 0;
+    if ((latStr[7] != 'N' && latStr[7] != 'S')) return false;
     pos.latitude = aprsToDegrees(latStr, true);
+    if (!isfinite(pos.latitude)) return false;
     p += 8;
 
     pos.symbolTable = *p++;
@@ -132,17 +167,22 @@ bool APRS::parsePosition(const char* data, Position& pos) {
     // Longitude: 9 chars
     char lonStr[10];
     memcpy(lonStr, p, 9); lonStr[9] = 0;
+    if ((lonStr[8] != 'E' && lonStr[8] != 'W')) return false;
     pos.longitude = aprsToDegrees(lonStr, false);
+    if (!isfinite(pos.longitude)) return false;
     p += 9;
 
     pos.symbol = *p++;
 
     // Try to parse course/speed: CCC/SSS
     if (strlen(p) >= 7 && p[3] == '/') {
+        for (size_t i = 0; i < 3; ++i) if (p[i] < '0' || p[i] > '9') return false;
+        for (size_t i = 4; i < 7; ++i) if (p[i] < '0' || p[i] > '9') return false;
         char cseBuf[4] = {p[0], p[1], p[2], 0};
         char spdBuf[4] = {p[4], p[5], p[6], 0};
         pos.course = (uint16_t)atoi(cseBuf);
         pos.speed = (uint16_t)atoi(spdBuf);
+        if (pos.course > 360) return false;
     }
 
     return true;
@@ -170,11 +210,15 @@ bool APRS::parseWeather(const char* data, Weather& weather) {
         // Read numeric value (up to 5 digits)
         int val = 0;
         int digits = 0;
+        int sign = 1;
+        if (*p == '-') { sign = -1; ++p; }
         while (*p >= '0' && *p <= '9' && digits < 5) {
             val = val * 10 + (*p - '0');
             p++;
             digits++;
         }
+        val *= sign;
+        if (digits == 0) continue;
         switch (code) {
             case 'g': weather.gustSpeed = (float)val; break;
             case 't': weather.temperature = (float)val; break;

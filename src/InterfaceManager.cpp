@@ -190,6 +190,7 @@ void InterfaceManager::setup() {
 }
 
 void InterfaceManager::loop() {
+    processEspNowReceiveQueue();
     cleanupExpiredEspNowAssemblies();
     processEspNowStoreForward();
 #if defined(KISS_OVER_USB)
@@ -242,10 +243,13 @@ void InterfaceManager::setupWiFi() {
     // ESP-NOW is latency-sensitive; modem sleep can drop/delay frames.
     esp_wifi_set_ps(WIFI_PS_NONE);
 
-    // Only attempt AP connection if explicitly enabled and credentials are provided.
-    if (WIFI_STA_CONNECT_ENABLED && strlen(WIFI_SSID) > 0 && strlen(WIFI_PASSWORD) > 0) {
-        WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-        LOG_INFO("IF: Connecting to WiFi %s", WIFI_SSID);
+    // Runtime credentials are loaded from /config.json before interface setup.
+    // An empty password is valid for an explicitly configured open network.
+    const char* configuredSsid = getConfiguredWiFiSsid();
+    const char* configuredPassword = getConfiguredWiFiPassword();
+    if (WIFI_STA_CONNECT_ENABLED && strlen(configuredSsid) > 0) {
+        WiFi.begin(configuredSsid, configuredPassword);
+        LOG_INFO("IF: Connecting to configured WiFi SSID");
         int attempts = 0;
         while (WiFi.status() != WL_CONNECTED && attempts < 20) {
             delay(500); DebugSerial.print("."); attempts++;
@@ -318,12 +322,30 @@ void InterfaceManager::setupESPNow() {
         DebugSerial.println("! ERROR: Initializing ESP-NOW failed!");
         return; // Cannot proceed with ESP-NOW
     }
+    if (!_espNowRxQueue) {
+        _espNowRxQueue = xQueueCreate(ESPNOW_RX_QUEUE_LENGTH, sizeof(EspNowRxFrame));
+        if (!_espNowRxQueue) {
+            DebugSerial.println("! ERROR: Failed to allocate ESP-NOW receive queue");
+            esp_now_deinit();
+            return;
+        }
+    } else {
+        xQueueReset(_espNowRxQueue);
+    }
     // Register static callback function which calls instance method
     esp_err_t result = esp_now_register_recv_cb(staticEspNowRecvCallback);
     if (result != ESP_OK) {
          DebugSerial.print("! ERROR: Failed to register ESP-NOW recv cb: "); DebugSerial.println(esp_err_to_name(result));
+         esp_now_deinit();
+         return;
     }
-    esp_now_register_send_cb(staticEspNowSendCallback);
+    result = esp_now_register_send_cb(staticEspNowSendCallback);
+    if (result != ESP_OK) {
+        DebugSerial.print("! ERROR: Failed to register ESP-NOW send cb: "); DebugSerial.println(esp_err_to_name(result));
+        esp_now_unregister_recv_cb();
+        esp_now_deinit();
+        return;
+    }
 
     _espNowInitialized = true;
 
@@ -353,7 +375,7 @@ void InterfaceManager::processWiFiInput() {
     if (packetSize > 0) {
         if (packetSize > MAX_PACKET_SIZE) {
              DebugSerial.print("! WARN: Oversized UDP packet received ("); DebugSerial.print(packetSize); DebugSerial.println(" bytes), discarding.");
-             _udp.clear(); // Discard data
+             while (_udp.available()) _udp.read();
              return;
         }
 
@@ -361,7 +383,7 @@ void InterfaceManager::processWiFiInput() {
         std::unique_ptr<uint8_t[]> udpBuffer(new (std::nothrow) uint8_t[packetSize]);
         if (!udpBuffer) {
              LOG_ERROR("new failed for UDP buffer!");
-             _udp.clear();
+             while (_udp.available()) _udp.read();
              return;
         }
 
@@ -480,27 +502,27 @@ void InterfaceManager::sendPacketVia(InterfaceType ifType, const uint8_t *packet
      }
 }
 
-void InterfaceManager::broadcastAnnounce(const uint8_t *packetBuffer, size_t packetLen) {
+void InterfaceManager::broadcastAnnounce(const uint8_t *packetBuffer, size_t packetLen, InterfaceType excludeInterface) {
      if (!packetBuffer || packetLen == 0) return;
      // Use nullptr destination for broadcast variants
-     if (_espNowInitialized) {
+     if (_espNowInitialized && excludeInterface != InterfaceType::ESP_NOW) {
          sendPacketViaEspNow(packetBuffer, packetLen, nullptr);
      }
-     if (WiFi.status() == WL_CONNECTED) {
+     if (WiFi.status() == WL_CONNECTED && excludeInterface != InterfaceType::WIFI_UDP) {
          sendPacketViaWiFi(packetBuffer, packetLen, nullptr);
      }
 #ifdef LORA_ENABLED
-     if (_loraInitialized) {
+     if (_loraInitialized && excludeInterface != InterfaceType::LORA) {
          sendPacketViaLoRa(packetBuffer, packetLen, nullptr);
      }
 #endif
 #ifdef HAM_MODEM_ENABLED
-     if (_hamModemInitialized) {
+     if (_hamModemInitialized && excludeInterface != InterfaceType::HAM_MODEM) {
          sendPacketViaHAMModem(packetBuffer, packetLen);
      }
 #endif
      // Always send announces via serial KISS (USB/UART)
-     sendPacketViaSerial(packetBuffer, packetLen);
+     if (excludeInterface != InterfaceType::SERIAL_PORT) sendPacketViaSerial(packetBuffer, packetLen);
 }
 
 // Internal send implementations
@@ -547,7 +569,7 @@ bool InterfaceManager::sendPacketViaEspNowInternal(const uint8_t *packetBuffer, 
 
     const size_t maxChunk = ESPNOW_FRAG_CHUNK_DATA_LEN;
     const size_t totalChunksSz = (packetLen + maxChunk - 1) / maxChunk;
-    if (totalChunksSz == 0 || totalChunksSz > 255) {
+    if (totalChunksSz == 0 || totalChunksSz > ESPNOW_MAX_FRAGMENT_CHUNKS) {
         DebugSerial.print("! ESP-NOW fragmentation failed, packet too large for chunk count: ");
         DebugSerial.println(packetLen);
 #if ESPNOW_STORE_FORWARD_ENABLED
@@ -621,7 +643,7 @@ void InterfaceManager::sendPacketViaWiFi(const uint8_t *packetBuffer, size_t pac
           RouteEntry* route = _routingTableRef.findRouteForInterface(destinationAddr, InterfaceType::WIFI_UDP);
           if (route && route->next_hop_ip) {
             targetIp = route->next_hop_ip;
-            // targetPort = route->next_hop_port; // Use standard port
+            if (route->next_hop_port != 0) targetPort = route->next_hop_port;
         } // else: use broadcast IP
      } // else: destinationAddr is null -> use broadcast IP
 
@@ -657,7 +679,7 @@ bool InterfaceManager::enqueueEspNowPacket(const uint8_t *packetBuffer, size_t p
     queued.payload.assign(packetBuffer, packetBuffer + packetLen);
     queued.hasDestination = (destinationAddr != nullptr);
     if (queued.hasDestination) {
-        memcpy(queued.destination.data(), destinationAddr, RNS_ADDRESS_SIZE);
+        memcpy(queued.destination.data(), destinationAddr, queued.destination.size());
     }
     queued.attempts = 0;
     queued.nextTryMs = millis() + ESPNOW_SF_RETRY_MS;
@@ -693,6 +715,17 @@ void InterfaceManager::processEspNowStoreForward() {
     }
     queued.nextTryMs = now + ESPNOW_SF_RETRY_MS;
 #endif
+}
+
+void InterfaceManager::processEspNowReceiveQueue() {
+    if (!_espNowRxQueue) return;
+    EspNowRxFrame frame;
+    while (xQueueReceive(_espNowRxQueue, &frame, 0) == pdTRUE) {
+        if (frame.length == 0 || frame.length > sizeof(frame.payload)) continue;
+        DebugSerial.print("[ESP-NOW RX] "); DebugSerial.print(frame.length); DebugSerial.print("B from ");
+        Utils::printBytes(frame.senderMac, sizeof(frame.senderMac), DebugSerial); DebugSerial.println();
+        handleEspNowPayload(frame.senderMac, frame.payload, frame.length);
+    }
 }
 
 #if METRICS_ENABLED && METRICS_UDP_ENABLED
@@ -832,6 +865,7 @@ void InterfaceManager::disableEspNow() {
         return;
     }
     esp_now_deinit();
+    if (_espNowRxQueue) xQueueReset(_espNowRxQueue);
     _espNowPeers.clear();
     _espNowInitialized = false;
     DebugSerial.println("IF: ESP-NOW disabled.");
@@ -911,11 +945,12 @@ bool InterfaceManager::parseEspNowFragment(const uint8_t *data, int len, uint16_
     if (len < static_cast<int>(ESPNOW_FRAG_HEADER_LEN)) return false;
     if (data[0] != ESPNOW_FRAG_MAGIC0 || data[1] != ESPNOW_FRAG_MAGIC1 || data[2] != ESPNOW_FRAG_VERSION) return false;
 
+    if ((data[3] & 0xFE) != 0) return false;
     hasCrc = (data[3] & 0x01) != 0;
     messageId = (static_cast<uint16_t>(data[4]) << 8) | static_cast<uint16_t>(data[5]);
     chunkIndex = data[6];
     totalChunks = data[7];
-    if (totalChunks == 0 || chunkIndex >= totalChunks) return false;
+    if (totalChunks == 0 || totalChunks > ESPNOW_MAX_FRAGMENT_CHUNKS || chunkIndex >= totalChunks) return false;
 
     expectedCrc = (static_cast<uint32_t>(data[8]) << 24)
                 | (static_cast<uint32_t>(data[9]) << 16)
@@ -924,6 +959,8 @@ bool InterfaceManager::parseEspNowFragment(const uint8_t *data, int len, uint16_
 
     chunkData = data + ESPNOW_FRAG_HEADER_LEN;
     chunkLen = static_cast<size_t>(len) - ESPNOW_FRAG_HEADER_LEN;
+    if (chunkLen == 0 || chunkLen > ESPNOW_FRAG_CHUNK_DATA_LEN) return false;
+    if (chunkIndex + 1 < totalChunks && chunkLen != ESPNOW_FRAG_CHUNK_DATA_LEN) return false;
     return true;
 }
 
@@ -963,6 +1000,7 @@ InterfaceManager::EspNowRxAssembly* InterfaceManager::getEspNowAssemblySlot(cons
         slot.lastUpdateMs = millis();
         slot.chunks.assign(totalChunks, std::vector<uint8_t>());
         slot.receivedChunk.assign(totalChunks, 0);
+        slot.receivedCount = 0;
         _espNowRxAssemblies.push_back(slot);
         return &_espNowRxAssemblies.back();
     }
@@ -1001,7 +1039,14 @@ void InterfaceManager::handleEspNowPayload(const uint8_t *senderMac, const uint8
     const uint8_t *chunkData = nullptr;
     size_t chunkLen = 0;
 
+    const bool looksFragmented = len >= 3 && incomingData[0] == ESPNOW_FRAG_MAGIC0 &&
+                                 incomingData[1] == ESPNOW_FRAG_MAGIC1 &&
+                                 incomingData[2] == ESPNOW_FRAG_VERSION;
     if (!parseEspNowFragment(incomingData, len, messageId, chunkIndex, totalChunks, hasCrc, expectedCrc, chunkData, chunkLen)) {
+        if (looksFragmented) {
+            DebugSerial.println("! WARN: Malformed ESP-NOW fragment discarded.");
+            return;
+        }
         if (len <= static_cast<int>(MAX_PACKET_SIZE)) {
             recordInterfaceRx(InterfaceType::ESP_NOW, static_cast<size_t>(len));
             _packetReceiver(incomingData, static_cast<size_t>(len), InterfaceType::ESP_NOW, senderMac, IPAddress(), 0);
@@ -1014,27 +1059,27 @@ void InterfaceManager::handleEspNowPayload(const uint8_t *senderMac, const uint8
     }
 
     if (totalChunks == 1) {
-        if (chunkLen <= MAX_PACKET_SIZE) {
+        if (chunkLen <= MAX_PACKET_SIZE && (!hasCrc || espnow_crc32(chunkData, chunkLen) == expectedCrc)) {
             recordInterfaceRx(InterfaceType::ESP_NOW, chunkLen);
             _packetReceiver(chunkData, chunkLen, InterfaceType::ESP_NOW, senderMac, IPAddress(), 0);
+        } else {
+            DebugSerial.println("! WARN: Invalid single-fragment ESP-NOW CRC, dropped frame");
         }
         return;
     }
 
     EspNowRxAssembly *slot = getEspNowAssemblySlot(senderMac, messageId, totalChunks);
     if (!slot) return;
-    if (hasCrc) {
-        if (slot->receivedCount == 0) {
-            slot->hasCrc = true;
-            slot->expectedCrc = expectedCrc;
-        } else if (!slot->hasCrc || slot->expectedCrc != expectedCrc) {
-            slot->active = false;
-            slot->chunks.clear();
-            slot->receivedChunk.clear();
-            slot->receivedCount = 0;
-            DebugSerial.println("! WARN: ESP-NOW fragment CRC metadata mismatch, dropped frame");
-            return;
-        }
+    if (slot->receivedCount == 0) {
+        slot->hasCrc = hasCrc;
+        slot->expectedCrc = expectedCrc;
+    } else if (slot->hasCrc != hasCrc || (hasCrc && slot->expectedCrc != expectedCrc)) {
+        slot->active = false;
+        slot->chunks.clear();
+        slot->receivedChunk.clear();
+        slot->receivedCount = 0;
+        DebugSerial.println("! WARN: ESP-NOW fragment CRC metadata mismatch, dropped frame");
+        return;
     }
 
     if (chunkIndex >= slot->receivedChunk.size()) return;
@@ -1124,11 +1169,19 @@ void InterfaceManager::staticEspNowRecvCallback(const esp_now_recv_info_t *recv_
 #else
 void InterfaceManager::staticEspNowRecvCallback(const uint8_t *mac_addr, const uint8_t *incomingData, int len) {
 #endif
-    if (_instance && _instance->_packetReceiver && mac_addr && incomingData && len > 0) {
-         _instance->espNowRxCount++;
-         DebugSerial.print("[ESP-NOW RX] "); DebugSerial.print(len); DebugSerial.print("B from ");
-         Utils::printBytes(mac_addr, 6, DebugSerial); DebugSerial.println();
-         _instance->handleEspNowPayload(mac_addr, incomingData, len);
+    if (_instance && _instance->_espNowRxQueue && mac_addr && incomingData &&
+        len > 0 && len <= static_cast<int>(ESPNOW_MAX_PAYLOAD_LEN)) {
+        EspNowRxFrame frame;
+        memcpy(frame.senderMac, mac_addr, sizeof(frame.senderMac));
+        frame.length = static_cast<uint16_t>(len);
+        memcpy(frame.payload, incomingData, static_cast<size_t>(len));
+        if (xQueueSend(_instance->_espNowRxQueue, &frame, 0) == pdTRUE) {
+            _instance->espNowRxCount++;
+        } else {
+            _instance->espNowRxDropped++;
+        }
+    } else if (_instance) {
+        _instance->espNowRxDropped++;
     }
 }
 
@@ -1156,13 +1209,15 @@ void InterfaceManager::sendEspNowDiagKiss() {
 
     char buf[160];
     int n = snprintf(buf, sizeof(buf),
-        "ESPNOW ch=%u init=%d tx_ok=%lu tx_fail=%lu rx=%lu peers=%u pwr=%d mac=%s",
+        "ESPNOW ch=%u init=%d tx_ok=%lu tx_fail=%lu rx=%lu rx_drop=%lu peers=%u pwr=%d mac=%s",
         ch, _espNowInitialized ? 1 : 0,
         (unsigned long)espNowTxOk, (unsigned long)espNowTxFail,
         (unsigned long)espNowRxCount,
+        (unsigned long)espNowRxDropped,
         (unsigned)_espNowPeers.size(), (int)txPwr,
         WiFi.macAddress().c_str());
     if (n <= 0) return;
+    if (n >= static_cast<int>(sizeof(buf))) n = sizeof(buf) - 1;
 
     // Build KISS frame: FEND + cmd(0x06) + payload + FEND
     std::vector<uint8_t> frame;
@@ -1618,12 +1673,13 @@ void InterfaceManager::setupIPFS() {
 }
 
 bool InterfaceManager::fetchIPFSContent(const char* ipfsHash, std::vector<uint8_t>& output) {
+    output.clear();
     if (!_ipfsInitialized || WiFi.status() != WL_CONNECTED) {
         DebugSerial.println("! ERROR: IPFS not available (WiFi not connected)");
         return false;
     }
     
-    if (!ipfsHash || strlen(ipfsHash) == 0) {
+    if (!ipfsHash || strlen(ipfsHash) == 0 || strlen(ipfsHash) > 128) {
         DebugSerial.println("! ERROR: Invalid IPFS hash");
         return false;
     }
@@ -1644,7 +1700,10 @@ bool InterfaceManager::fetchIPFSContent(const char* ipfsHash, std::vector<uint8_
     DebugSerial.print("IF: Fetching IPFS content: ");
     DebugSerial.println(url);
     
-    _httpClient.begin(url);
+    if (!_httpClient.begin(url)) {
+        DebugSerial.println("! ERROR: Could not initialize IPFS HTTP request");
+        return false;
+    }
     _httpClient.setTimeout(IPFS_TIMEOUT_MS);
     
     int httpCode = _httpClient.GET();
@@ -1656,13 +1715,15 @@ bool InterfaceManager::fetchIPFSContent(const char* ipfsHash, std::vector<uint8_
             // Read content
             WiFiClient* stream = _httpClient.getStreamPtr();
             output.resize(contentLength);
-            
-            size_t bytesRead = 0;
-            while (bytesRead < (size_t)contentLength && stream->available()) {
-                bytesRead += stream->readBytes(output.data() + bytesRead, contentLength - bytesRead);
-            }
-            
+
+            const size_t bytesRead = stream->readBytes(output.data(), static_cast<size_t>(contentLength));
+
             _httpClient.end();
+            if (bytesRead != static_cast<size_t>(contentLength)) {
+                output.clear();
+                DebugSerial.println("! ERROR: Incomplete IPFS response body");
+                return false;
+            }
             recordInterfaceRx(InterfaceType::IPFS, bytesRead);
             DebugSerial.print("IF: IPFS content fetched: ");
             DebugSerial.print(bytesRead);

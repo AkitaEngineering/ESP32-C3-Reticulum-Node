@@ -1,9 +1,0 @@
-
-
-# Load bootloader symbols
-set confirm off
-    # Bootloader elf was not found
-set confirm on
-
-# Load application symbols
-file /run/media/shaun/DATA/code/ESP32-C3-Reticulum-Node/build-espidf-check/bootloader/bootloader.elf

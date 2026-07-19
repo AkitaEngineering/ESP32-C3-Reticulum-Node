@@ -3,14 +3,14 @@
 Status (2026-02-20): roadmap updated; v2.1 features largely implemented.
 
 ## Goals
-- Make the node easier to operate remotely (Web UI, runtime config, metrics)
+- Make the node easier to operate remotely (HTTP API, runtime config, metrics)
 - Improve reliability and update security (signed OTA, CI, tests)
 - Add user-facing features (APRS, IPFS improvements, BLE provisioning)
 
 ## Milestones
 - v2.1 — Observability & DX
   - [x] CI + unit tests
-  - [x] Web UI + REST API (status, logs)
+  - [x] HTTP REST API (status, routes, config, metrics, signed OTA)
   - [x] Runtime JSON config (SPIFFS/LittleFS)
   - [x] /metrics endpoint + log levels
 - v2.2 — Field features

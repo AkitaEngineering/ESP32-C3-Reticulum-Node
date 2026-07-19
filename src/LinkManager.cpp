@@ -9,10 +9,15 @@
 LinkManager::LinkManager(ReticulumNode& owner) : _ownerRef(owner) {}
 
 size_t LinkManager::getActiveLinkCount() const {
-    return _activeLinks.size();
+    size_t count = 0;
+    for (const auto& entry : _activeLinks) {
+        if (entry.second && entry.second->isActive()) ++count;
+    }
+    return count;
 }
 
 LinkManager::LinkPtr LinkManager::findLink(const uint8_t link_id[16]) {
+    if (!link_id) return nullptr;
     std::array<uint8_t, 16> key;
     memcpy(key.data(), link_id, 16);
     auto it = _activeLinks.find(key);
@@ -20,27 +25,64 @@ LinkManager::LinkPtr LinkManager::findLink(const uint8_t link_id[16]) {
     return nullptr;
 }
 
+std::shared_ptr<const RNSLink> LinkManager::findLink(const uint8_t link_id[16]) const {
+    if (!link_id) return nullptr;
+    std::array<uint8_t, 16> key;
+    memcpy(key.data(), link_id, 16);
+    auto it = _activeLinks.find(key);
+    return it != _activeLinks.end() ? it->second : nullptr;
+}
+
+bool LinkManager::hasLink(const uint8_t link_id[16]) const {
+    return static_cast<bool>(findLink(link_id));
+}
+
+bool LinkManager::establishLink(const uint8_t dest_hash[16], const uint8_t dest_pub_key[64],
+                                uint8_t out_link_id[16]) {
+    if (!dest_hash || !dest_pub_key || _activeLinks.size() >= LINK_MAX_ACTIVE ||
+        !_ownerRef.getIdentity().isReady()) {
+        return false;
+    }
+
+    auto link = std::make_shared<RNSLink>(dest_hash, dest_pub_key, *this, getIdentity());
+    if (!link->establish()) return false;
+
+    std::array<uint8_t, 16> key;
+    memcpy(key.data(), link->getLinkId(), key.size());
+    if (_activeLinks.find(key) != _activeLinks.end()) {
+        link->close(false);
+        return false;
+    }
+    _activeLinks.emplace(key, link);
+    if (out_link_id) memcpy(out_link_id, key.data(), key.size());
+    return true;
+}
+
+bool LinkManager::sendLinkData(const uint8_t link_id[16], const uint8_t* data, size_t len) {
+    auto link = findLink(link_id);
+    return link && link->sendData(data, len);
+}
+
 // ========================================================================
 // Process incoming link-related packets
 // ========================================================================
 
-void LinkManager::processPacket(const RnsPacketInfo& packetInfo, InterfaceType /*interface*/) {
+void LinkManager::processPacket(const RnsPacketInfo& packetInfo, InterfaceType interface) {
     // LINKREQUEST packets (packet_type=0x02) are handled separately
     if (packetInfo.packet_type == RNS_PACKET_LINKREQ) {
-        handleLinkRequest(packetInfo, nullptr, 0);
+        handleLinkRequest(packetInfo, interface);
         return;
     }
 
     // All other link packets are addressed by link_id in the destination field
-    handleLinkPacket(packetInfo);
+    handleLinkPacket(packetInfo, interface);
 }
 
 // ========================================================================
 // Handle incoming LINKREQUEST
 // ========================================================================
 
-void LinkManager::handleLinkRequest(const RnsPacketInfo& packetInfo,
-                                     const uint8_t* raw, size_t rawLen) {
+void LinkManager::handleLinkRequest(const RnsPacketInfo& packetInfo, InterfaceType interface) {
     // Validate payload size: [X25519_pub 32][Ed25519_sig_pub 32][signalling 3] = 67
     if (packetInfo.data.size() != RNS_LINK_REQUEST_SIZE) {
         DebugSerial.print("! LinkManager: Invalid LINKREQUEST size ");
@@ -64,6 +106,7 @@ void LinkManager::handleLinkRequest(const RnsPacketInfo& packetInfo,
         DebugSerial.println(mode);
         return;
     }
+    const uint32_t requestedMtu = RNSLink::mtuFromSignalling(signalling);
 
     // Compute link_id from hashable part of the LINKREQUEST packet
     // hashable_part = (flags & 0x0F) + raw[2:] minus the MTU signalling bytes
@@ -106,7 +149,12 @@ void LinkManager::handleLinkRequest(const RnsPacketInfo& packetInfo,
 
     // Create new link as responder
     RNSCrypto& identity = getIdentity();
-    auto link = std::make_shared<RNSLink>(link_id, peer_x25519_pub, peer_sig_pub, *this, identity);
+    auto link = std::make_shared<RNSLink>(link_id, peer_x25519_pub, peer_sig_pub,
+                                         interface, *this, identity);
+    if (!link->setMtu(requestedMtu)) {
+        DebugSerial.println("! LinkManager: invalid requested MTU");
+        return;
+    }
 
     // Perform ECDH handshake
     if (!link->handshake()) {
@@ -132,7 +180,7 @@ void LinkManager::handleLinkRequest(const RnsPacketInfo& packetInfo,
 // Handle link-addressed packets (LRPROOF, LRRTT, DATA, KEEPALIVE, etc.)
 // ========================================================================
 
-void LinkManager::handleLinkPacket(const RnsPacketInfo& packetInfo) {
+void LinkManager::handleLinkPacket(const RnsPacketInfo& packetInfo, InterfaceType interface) {
     // For link-addressed packets, the destination field IS the link_id
     auto link = findLink(packetInfo.destination_hash);
     if (!link) {
@@ -141,7 +189,7 @@ void LinkManager::handleLinkPacket(const RnsPacketInfo& packetInfo) {
         return;
     }
 
-    link->handlePacket(packetInfo);
+    link->handlePacket(packetInfo, interface);
 
     // Prune if link closed
     if (link->getState() == RNSLinkState::CLOSED) {
@@ -186,9 +234,14 @@ void LinkManager::removeLink(const uint8_t link_id[16]) {
 const uint8_t* LinkManager::getNodeAddress() const { return _ownerRef.getNodeAddress(); }
 uint16_t LinkManager::getNextPacketId() { return _ownerRef.getNextPacketId(); }
 
-void LinkManager::sendPacketRaw(const uint8_t* buffer, size_t len, const uint8_t* destination) {
+void LinkManager::sendPacketRaw(const uint8_t* buffer, size_t len, const uint8_t* destination,
+                                InterfaceType interface) {
     if (!buffer || len == 0 || !destination) return;
-    _ownerRef.getInterfaceManager().sendPacket(buffer, len, destination, InterfaceType::UNKNOWN);
+    if (interface == InterfaceType::UNKNOWN) {
+        _ownerRef.getInterfaceManager().sendPacket(buffer, len, destination, InterfaceType::UNKNOWN);
+    } else {
+        _ownerRef.getInterfaceManager().sendPacketVia(interface, buffer, len, destination);
+    }
 }
 
 void LinkManager::processReceivedLinkData(const uint8_t* link_id, const std::vector<uint8_t>& data) {

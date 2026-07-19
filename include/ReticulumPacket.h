@@ -51,6 +51,8 @@ struct RnsPacketInfo {
 
     uint8_t hops = 0;
     uint8_t destination_hash[RNS_TRUNCATED_HASHLENGTH_BYTES] = {0};  // 16 bytes
+    uint8_t transport_id[RNS_TRUNCATED_HASHLENGTH_BYTES] = {0};      // Header Type 2 only
+    uint8_t packet_hash[32] = {0};                                   // Official hashable-part SHA-256
     uint8_t context = RNS_CONTEXT_NONE;
 
     std::vector<uint8_t> data;    // Data payload
@@ -64,7 +66,7 @@ struct RnsPacketInfo {
     uint16_t sequence_number = 0;                  // For link-context packets
     std::vector<uint8_t> payload;                  // App data (after metadata stripped)
 
-    RnsPacketInfo() : packet_len(0), valid(false) {}
+    RnsPacketInfo() = default;
 
     // Helper to parse flags byte
     void parseFlags() {

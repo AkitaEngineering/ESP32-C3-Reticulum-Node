@@ -7,6 +7,7 @@
 #include "RoutingTable.h"     // Needs definition for _routing_table member
 #include "Log.h"
 #include <EEPROM.h>           // Include EEPROM library
+#include <esp_ota_ops.h>
 #include <WiFi.h>             // For WiFi.status(), WiFi.macAddress() in printStatus
 #include <freertos/FreeRTOS.h> // for uxTaskGetStackHighWaterMark
 #if WEBSERVER_ENABLED
@@ -29,12 +30,11 @@ uint16_t randomValidPacketCounter() {
 }
 
 uint16_t nextValidPacketCounter(uint16_t currentCounter) {
-    currentCounter = static_cast<uint16_t>(currentCounter + 1u);
-    if (currentCounter == 0x0000u || currentCounter == 0xFFFFu) {
+    if (currentCounter >= 0xFFFEu) {
         return 0x0001u;
     }
 
-    return currentCounter;
+    return static_cast<uint16_t>(currentCounter + 1u);
 }
 
 #if METRICS_ENABLED
@@ -80,12 +80,10 @@ ReticulumNode::ReticulumNode() :
     _linkManager(*this),
     _last_announce_time(0),
     _last_mem_check_time(0),
-    _appDataHandler(nullptr), // Initialize callback to null
-    _recentDataPktIdx(0)
+    _appDataHandler(nullptr) // Initialize callback to null
 {
     memset(_nodeAddress, 0, RNS_ADDRESS_SIZE); // Clear address initially
     memset(_destinationHash, 0, sizeof(_destinationHash));
-    memset(_recentDataPkts, 0, sizeof(_recentDataPkts));
 }
 
 void ReticulumNode::setup() {
@@ -112,8 +110,8 @@ void ReticulumNode::setup() {
     _subscribedGroups = SUBSCRIBED_GROUPS; // Copy extra groups from Config.h
     uint8_t plainDestinationHash[16] = {0};
     RNSIdentity::destination_hash(_appName.c_str(), nullptr, plainDestinationHash);
-    std::array<uint8_t, RNS_ADDRESS_SIZE> defaultPlainGroup = {0};
-    memcpy(defaultPlainGroup.data(), plainDestinationHash, RNS_ADDRESS_SIZE);
+    std::array<uint8_t, RNS_DESTINATION_HASH_SIZE> defaultPlainGroup = {0};
+    memcpy(defaultPlainGroup.data(), plainDestinationHash, defaultPlainGroup.size());
     bool hasDefaultPlainGroup = false;
     for (const auto& group : _subscribedGroups) {
         if (group == defaultPlainGroup) {
@@ -126,8 +124,8 @@ void ReticulumNode::setup() {
     }
 
     // runtime sanity checks
-    if (strlen(WIFI_SSID) == 0 || strlen(WIFI_PASSWORD) == 0) {
-        LOG_WARN("WiFi credentials appear empty; WiFi interface may not connect.");
+    if (WIFI_STA_CONNECT_ENABLED && strlen(getConfiguredWiFiSsid()) == 0) {
+        LOG_WARN("WiFi SSID is empty; WiFi management and UDP will be unavailable.");
     }
 
     // Setup interfaces (which also sets up UDP, ESP-NOW etc)
@@ -145,6 +143,24 @@ void ReticulumNode::setup() {
 #if WEBSERVER_ENABLED
     _webServerManager.begin();
 #endif
+
+    // The pinned ESP32 framework enables bootloader rollback. Confirm a newly
+    // booted OTA slot only after identity, interfaces, and management services
+    // have completed their initialization.
+    const esp_partition_t* runningPartition = esp_ota_get_running_partition();
+    esp_ota_img_states_t otaState;
+    if (runningPartition && esp_ota_get_state_partition(runningPartition, &otaState) == ESP_OK &&
+        otaState == ESP_OTA_IMG_PENDING_VERIFY) {
+        bool startupHealthy = _identity.isReady() && _interfaceManager.isEspNowInitialized();
+#if WEBSERVER_ENABLED
+        startupHealthy = startupHealthy && _webServerManager.isStarted();
+#endif
+        if (!startupHealthy) {
+            LOG_ERROR("Pending OTA image failed startup health checks; rollback remains armed");
+        } else if (esp_ota_mark_app_valid_cancel_rollback() != ESP_OK) {
+            LOG_ERROR("Failed to confirm the pending OTA image");
+        }
+    }
 }
 
 void ReticulumNode::loop() {
@@ -229,7 +245,7 @@ void ReticulumNode::generateNodeAddress() {
         _nodeAddress[i] = random(0, 256);
     }
     // Ensure address is not easily guessable or problematic (like all zeros)
-    if (Utils::compareAddresses(_nodeAddress, (const uint8_t*)"\x00\x00\x00\x00\x00\x00\x00\x00")) {
+    if (Utils::isAllZeros(_nodeAddress, RNS_ADDRESS_SIZE)) {
         _nodeAddress[0] = random(1, 256); // Ensure first byte is non-zero
     }
 }
@@ -478,8 +494,25 @@ void ReticulumNode::handleReceivedPacket(const uint8_t *packetBuffer, size_t pac
         return;
     }
 
-    // Ignore packets sourced from self that might have looped back
-    if (Utils::compareAddresses(packetInfo.source, _nodeAddress)) {
+    const bool matchesIdentityDestination =
+        memcmp(packetInfo.destination_hash, _destinationHash, sizeof(_destinationHash)) == 0;
+    const bool localControlInterface = interface == InterfaceType::SERIAL_PORT ||
+                                       interface == InterfaceType::BLUETOOTH;
+
+    // LOCAL_CMD is a host-control envelope, not an on-air Reticulum context.
+    // Consume it only from a local KISS interface and never route it.
+    if (packetInfo.context == RNS_CONTEXT_LOCAL_CMD) {
+        if (!localControlInterface || packetInfo.packet_type != RNS_PACKET_DATA ||
+            packetInfo.destination_type != RNS_DEST_SINGLE) {
+            DebugSerial.println("! Node: rejecting invalid or non-local LOCAL_CMD packet.");
+            return;
+        }
+        processPacketForSelf(packetInfo, interface);
+        return;
+    }
+
+    // Ignore our own cryptographic announce if an interface loops it back.
+    if (packetInfo.packet_type == RNS_PACKET_ANNOUNCE && matchesIdentityDestination) {
         DebugSerial.println("[Node] Dropping packet sourced from self (loopback).");
         return;
     }
@@ -487,18 +520,33 @@ void ReticulumNode::handleReceivedPacket(const uint8_t *packetBuffer, size_t pac
     // --- 1. Link Layer Packet Handling ---
     // LINKREQUEST packets: initiates a new link handshake
     if (packetInfo.packet_type == RNS_PACKET_LINKREQ) {
-        _linkManager.handleLinkRequest(packetInfo, packetBuffer, packetLen);
+        if (packetInfo.destination_type == RNS_DEST_SINGLE && matchesIdentityDestination) {
+            _linkManager.handleLinkRequest(packetInfo, interface);
+        } else {
+            forwardPacket(packetInfo, interface);
+        }
         return;
     }
     // All packets addressed to a LINK destination (LRPROOF, data, keepalive, close, RTT)
     if (packetInfo.destination_type == RNS_DEST_LINK) {
-        _linkManager.handleLinkPacket(packetInfo);
+        if (_linkManager.hasLink(packetInfo.destination_hash)) {
+            _linkManager.handleLinkPacket(packetInfo, interface);
+        } else {
+            forwardPacket(packetInfo, interface);
+        }
         return;
     }
 
     // --- 2. Announce Packet Handling ---
     // Official Reticulum format: announces identified by packet_type field (bits 0-1 of flags)
     if (packetInfo.packet_type == RNS_PACKET_ANNOUNCE) {
+        if (packetInfo.destination_type != RNS_DEST_SINGLE ||
+            !RNSCrypto::validateAnnouncePayload(packetInfo.destination_hash,
+                                                packetInfo.data.data(), packetInfo.data.size(),
+                                                packetInfo.context_flag)) {
+            DebugSerial.println("! Node: invalid announce signature or destination, discarding.");
+            return;
+        }
         // DebugSerial.println("Node: Processing Announce..."); // Verbose
         _routingTable.update(packetInfo, interface, sender_mac, sender_ip, sender_port, &_interfaceManager);
         forwardAnnounce(packetInfo, interface); // Attempt re-broadcast
@@ -508,10 +556,21 @@ void ReticulumNode::handleReceivedPacket(const uint8_t *packetBuffer, size_t pac
     // --- 3. Data / Other Packet Handling (Check Destination) ---
     // Check destination: Single Address Match
     if (packetInfo.destination_type == RNS_DEST_SINGLE &&
-        Utils::compareAddresses(packetInfo.destination, _nodeAddress))
-    {
+        matchesIdentityDestination) {
         DebugSerial.println("[Node] Packet addressed to self (single).");
-        processPacketForSelf(packetInfo, interface);
+        if (packetInfo.packet_type == RNS_PACKET_DATA) {
+            std::vector<uint8_t> plaintext;
+            if (!_identity.decryptForIdentity(packetInfo.data.data(), packetInfo.data.size(), plaintext)) {
+                DebugSerial.println("! Node: SINGLE payload authentication/decryption failed.");
+                return;
+            }
+            RnsPacketInfo decryptedInfo = packetInfo;
+            decryptedInfo.data = plaintext;
+            decryptedInfo.payload = std::move(plaintext);
+            processPacketForSelf(decryptedInfo, interface);
+        } else {
+            DebugSerial.println("! Node: unsupported packet type addressed to SINGLE destination.");
+        }
         // Do not forward packets addressed directly to this node
         return;
     }
@@ -519,11 +578,9 @@ void ReticulumNode::handleReceivedPacket(const uint8_t *packetBuffer, size_t pac
     else if (packetInfo.destination_type == RNS_DEST_GROUP)
     {
         for (const auto& group : _subscribedGroups) {
-            if (Utils::compareAddresses(packetInfo.destination, group.data())) {
-                DebugSerial.println("[Node] Packet addressed to subscribed group.");
-                processPacketForSelf(packetInfo, interface);
-                // (keep iterating to allow logging of first-matching group if needed)
-                break; // Processed locally, but MUST continue to forwarding
+            if (memcmp(packetInfo.destination_hash, group.data(), group.size()) == 0) {
+                DebugSerial.println("[Node] Encrypted GROUP destination matched, but no group key is configured; forwarding only.");
+                break;
             }
         }
     }
@@ -532,10 +589,9 @@ void ReticulumNode::handleReceivedPacket(const uint8_t *packetBuffer, size_t pac
     {
         bool plainMatched = false;
         for (const auto& group : _subscribedGroups) {
-            // PLAIN destinations use a 16-byte hash, but we compare first 8 bytes
-            if (Utils::compareAddresses(packetInfo.destination_hash, group.data())) {
+            if (memcmp(packetInfo.destination_hash, group.data(), group.size()) == 0) {
                 DebugSerial.println("[Node] Packet addressed to subscribed PLAIN destination.");
-                processPacketForSelf(packetInfo, interface);
+                if (packetInfo.packet_type == RNS_PACKET_DATA) processPacketForSelf(packetInfo, interface);
                 plainMatched = true;
                 break; // Processed locally, but MUST continue to forwarding
             }
@@ -544,7 +600,7 @@ void ReticulumNode::handleReceivedPacket(const uint8_t *packetBuffer, size_t pac
 #if RNS_ACCEPT_ALL_PLAIN_DESTINATIONS
         if (!plainMatched) {
             DebugSerial.println("[Node] Accepting PLAIN packet in indiscriminate mode.");
-            processPacketForSelf(packetInfo, interface);
+            if (packetInfo.packet_type == RNS_PACKET_DATA) processPacketForSelf(packetInfo, interface);
         }
 #endif
     }
@@ -560,7 +616,7 @@ void ReticulumNode::handleReceivedPacket(const uint8_t *packetBuffer, size_t pac
 // Handles non-link packets addressed to this node (or group), including LOCAL_CMD
 void ReticulumNode::processPacketForSelf(const RnsPacketInfo& packetInfo, InterfaceType interface) {
 
-    // Check for Local Command Context from Serial/BT to INITIATE reliable send or debug
+    // Check for the node-specific local command context from Serial/BT.
     if (packetInfo.context == RNS_CONTEXT_LOCAL_CMD &&
        (interface == InterfaceType::SERIAL_PORT || interface == InterfaceType::BLUETOOTH))
     {
@@ -649,7 +705,7 @@ void ReticulumNode::processPacketForSelf(const RnsPacketInfo& packetInfo, Interf
                                            0,
                                            pong))
             {
-                _interfaceManager.sendPacket(buf, outlen, packetInfo.source, interface);
+                _interfaceManager.sendPacket(buf, outlen, replyDestHash, interface);
             }
         }
     }
@@ -666,20 +722,19 @@ void ReticulumNode::forwardPacket(const RnsPacketInfo& packetInfo, InterfaceType
         return;
     }
 
-    // Duplicate detection: compute hash of destination + payload to avoid
-    // forwarding the same data packet multiple times (prevents exponential
-    // traffic amplification in a mesh).
-    uint32_t pktHash = 0;
-    for (int i = 0; i < RNS_ADDRESS_SIZE; ++i) pktHash = pktHash * 31 + packetInfo.destination[i];
-    for (auto b : packetInfo.data) pktHash = pktHash * 31 + b;
-    for (size_t i = 0; i < RECENT_DATA_PKT_SIZE; ++i) {
-        if (_recentDataPkts[i] == pktHash) {
+    // Use the official packet hash rather than a small ad-hoc checksum so
+    // different contexts and destinations cannot suppress each other.
+    for (size_t i = 0; i < _recentDataPktCount; ++i) {
+        if (memcmp(_recentDataPkts[i].data(), packetInfo.packet_hash,
+                   RNS_TRUNCATED_HASHLENGTH_BYTES) == 0) {
             // Already forwarded recently
             return;
         }
     }
-    _recentDataPkts[_recentDataPktIdx % RECENT_DATA_PKT_SIZE] = pktHash;
-    _recentDataPktIdx++;
+    memcpy(_recentDataPkts[_recentDataPktIdx].data(), packetInfo.packet_hash,
+           RNS_TRUNCATED_HASHLENGTH_BYTES);
+    _recentDataPktIdx = (_recentDataPktIdx + 1) % RECENT_DATA_PKT_SIZE;
+    if (_recentDataPktCount < RECENT_DATA_PKT_SIZE) ++_recentDataPktCount;
 
     // Create forwarding packet info (increment hops)
     RnsPacketInfo forwardInfo = packetInfo; // Creates a copy
@@ -695,7 +750,10 @@ void ReticulumNode::forwardPacket(const RnsPacketInfo& packetInfo, InterfaceType
         forwardInfo.propagation_type,      // preserve propagation type
         forwardInfo.context,               // preserve context
         forwardInfo.hops,                  // already incremented
-        forwardInfo.data))                 // full data payload
+        forwardInfo.data,
+        forwardInfo.context_flag ? 1 : 0,
+        forwardInfo.header_type,
+        forwardInfo.header_type == RNS_HEADER_2 ? forwardInfo.transport_id : nullptr))
     {
         DebugSerial.println("! ERROR: Failed to serialize packet for forwarding!");
         return;
@@ -703,7 +761,7 @@ void ReticulumNode::forwardPacket(const RnsPacketInfo& packetInfo, InterfaceType
 
     // DebugSerial.print("Forwarding packet ID "); DebugSerial.print(forwardInfo.packet_id); DebugSerial.print(" Hops "); DebugSerial.println(forwardInfo.hops); // Verbose
     // Use InterfaceManager to send via appropriate interfaces (routing or broadcast)
-    _interfaceManager.sendPacket(forwardBuffer, forwardLen, forwardInfo.destination, incomingInterface);
+    _interfaceManager.sendPacket(forwardBuffer, forwardLen, forwardInfo.destination_hash, incomingInterface);
 }
 
 // Handles re-broadcasting/forwarding of Announce packets
@@ -714,19 +772,12 @@ void ReticulumNode::forwardAnnounce(const RnsPacketInfo& packetInfo, InterfaceTy
         return;
     }
 
-    // Check if this announce was recently forwarded to prevent loops/storms
-    // Use a hash of source + payload as the key since packet_id is always 0 for announces
-    uint32_t announceHash = 0;
-    for (int i = 0; i < RNS_ADDRESS_SIZE; ++i) announceHash = announceHash * 31 + packetInfo.source[i];
-    for (auto b : packetInfo.data) announceHash = announceHash * 31 + b;
-    uint32_t announceKey = announceHash;
-
-    if (!_routingTable.shouldForwardAnnounce(announceKey, packetInfo.source)) {
+    if (!_routingTable.shouldForwardAnnounce(packetInfo.packet_hash)) {
          // DebugSerial.println("Announce recently forwarded or loop detected. Skipping re-broadcast."); // Verbose
         return;
     }
     // Mark as forwarded BEFORE sending
-    _routingTable.markAnnounceForwarded(announceKey, packetInfo.source);
+    _routingTable.markAnnounceForwarded(packetInfo.packet_hash);
 
     // Create forwarding packet info (increment hops)
     RnsPacketInfo forwardInfo = packetInfo;
@@ -739,10 +790,13 @@ void ReticulumNode::forwardAnnounce(const RnsPacketInfo& packetInfo, InterfaceTy
         forwardInfo.destination_hash,     // 16-byte destination hash
         RNS_PACKET_ANNOUNCE,              // packet_type = ANNOUNCE
         forwardInfo.destination_type,     // preserve dest type
-        RNS_PROPAGATION_BROADCAST,        // always broadcast announces
+        forwardInfo.propagation_type,     // preserve transport/broadcast semantics
         forwardInfo.context,              // preserve context
         forwardInfo.hops,                 // already incremented
-        forwardInfo.data))                // full data payload (includes source prefix)
+        forwardInfo.data,
+        forwardInfo.context_flag ? 1 : 0,
+        forwardInfo.header_type,
+        forwardInfo.header_type == RNS_HEADER_2 ? forwardInfo.transport_id : nullptr))
     {
         DebugSerial.println("! ERROR: Failed to serialize announce for forwarding!");
         return;
@@ -750,7 +804,7 @@ void ReticulumNode::forwardAnnounce(const RnsPacketInfo& packetInfo, InterfaceTy
 
     // DebugSerial.print("Re-broadcasting Announce ID "); DebugSerial.print(forwardInfo.packet_id); DebugSerial.print(" Hops "); DebugSerial.println(forwardInfo.hops); // Verbose
     // Announce should be broadcast, not routed to specific dest
-    _interfaceManager.broadcastAnnounce(forwardBuffer, forwardLen);
+    _interfaceManager.broadcastAnnounce(forwardBuffer, forwardLen, incomingInterface);
 }
 
 // --- Application Layer Integration ---

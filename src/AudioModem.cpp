@@ -28,16 +28,6 @@ AudioModem::AudioModem(ModemType type)
   _ledcResolution(8),
   _transmitting(false),
   _receiving(false),
-  _txBitIndex(0),
-  _txByteIndex(0),
-  _txSampleIndex(0),
-  _rxBufferIndex(0),
-  _rxSampleIndex(0),
-  _rxBitState(false),
-  _rxByte(0),
-  _rxBitCount(0),
-  _lastSample(0.0f),
-  _filterState(0.0f),
   _sampleCount(0),
   _onesCount(0),
   _inFrame(false),
@@ -178,28 +168,6 @@ void AudioModem::processAudioSample(int16_t sample) {
         _goertzelSpace.reset();
         _sampleCount = 0;
     }
-}
-
-int16_t AudioModem::generateSample(uint8_t bit) {
-    (void)bit;
-    return 0; // not used (tone generation handled by LEDC)
-}
-
-bool AudioModem::demodulateBit(int16_t sample) {
-    (void)sample;
-    return false;
-}
-
-uint8_t AudioModem::nrziEncode(uint8_t bit, uint8_t& lastBit) {
-    uint8_t encoded = (bit ? lastBit : !lastBit);
-    lastBit = encoded;
-    return encoded;
-}
-
-uint8_t AudioModem::nrziDecode(uint8_t bit, uint8_t& lastBit) {
-    uint8_t decoded = (bit == lastBit) ? 1 : 0;
-    lastBit = bit;
-    return decoded;
 }
 
 void AudioModem::processDecodedBit(uint8_t bit) {

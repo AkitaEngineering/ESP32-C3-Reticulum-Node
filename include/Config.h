@@ -6,6 +6,14 @@
 #include <vector>
 #include <array> // For group addresses
 
+#ifndef FIRMWARE_VERSION
+#define FIRMWARE_VERSION "0.3.0-dev"
+#endif
+
+#ifndef PRODUCTION_BUILD
+#define PRODUCTION_BUILD 0
+#endif
+
 // --- LED Configuration ---
 // Provide a fallback for boards that don't define LED_BUILTIN
 #ifndef LED_BUILTIN
@@ -20,7 +28,7 @@ inline void initStatusLed() {
 
 inline void setStatusLed(bool on) {
 #if defined(RGB_BUILTIN)
-    rgbLedWrite(RGB_BUILTIN, 0, 0, on ? 20 : 0);
+    neopixelWrite(RGB_BUILTIN, 0, 0, on ? 20 : 0);
 #else
     digitalWrite(LED_BUILTIN, on ? HIGH : LOW);
 #endif
@@ -315,6 +323,8 @@ struct RoutePriorityConfig;
 const char* getDefaultDeviceName();
 const char* getConfiguredNodeName();
 const char* getConfiguredAppName();
+const char* getConfiguredWiFiSsid();
+const char* getConfiguredWiFiPassword();
 const RoutePriorityConfig& getConfiguredRoutePriorities();
 void reloadRuntimeConfigCache();
 bool hasRuntimeConfigFile();
@@ -332,6 +342,7 @@ const int EEPROM_SIZE = 128;     // Increased for RNS identity keypair storage
 
 // --- Reticulum Network Parameters ---
 const size_t RNS_ADDRESS_SIZE = 8;
+const size_t RNS_DESTINATION_HASH_SIZE = 16;
 // Official Reticulum MTU is 500 bytes. The maximum data payload depends on
 // header type: Header1 = 500-19 = 481, Header2 = 500-35 = 465.  We use the
 // smaller value so serialised packets never exceed MTU regardless of header.
@@ -359,10 +370,7 @@ const unsigned long MEM_CHECK_INTERVAL_MS = 15000; // Check memory every 15 seco
 const unsigned long RECENT_ANNOUNCE_TIMEOUT_MS = ANNOUNCE_INTERVAL_MS / 2; // How long to remember forwarded announces
 
 // --- Link Layer Parameters ---
-const unsigned long LINK_REQ_TIMEOUT_MS = 10000; // Timeout for initial Link Request ACK
-const unsigned long LINK_RETRY_TIMEOUT_MS = 5000; // Timeout for data packet ACK
 const unsigned long LINK_INACTIVITY_TIMEOUT_MS = ROUTE_TIMEOUT_MS * 2; // Timeout for closing inactive links
-const uint8_t LINK_MAX_RETRIES = 3; // Max retries for a packet before closing link
 const size_t LINK_MAX_ACTIVE = 10; // Max concurrent active links (Adjust based on memory)
 
 static_assert(LINK_MAX_ACTIVE > 0, "LINK_MAX_ACTIVE must be at least 1");
@@ -412,9 +420,8 @@ static_assert(MAX_RECENT_ANNOUNCES > 0, "MAX_RECENT_ANNOUNCES must be positive")
 
 // --- Group Addresses ---
 // Define groups this node belongs to. Example:
-const std::vector<std::array<uint8_t, RNS_ADDRESS_SIZE>> SUBSCRIBED_GROUPS = {
-    // {0xCA, 0xFE, 0xBA, 0xBE, 0x00, 0x00, 0x00, 0x01}, // Example Group 1
-    // {0xDE, 0xAD, 0xBE, 0xEF, 0x12, 0x34, 0x56, 0x78}  // Example Group 2
+const std::vector<std::array<uint8_t, RNS_DESTINATION_HASH_SIZE>> SUBSCRIBED_GROUPS = {
+    // Add complete 16-byte Reticulum destination hashes here.
 };
 
 // --- LoRa Configuration ---
@@ -496,6 +503,13 @@ const std::vector<std::array<uint8_t, RNS_ADDRESS_SIZE>> SUBSCRIBED_GROUPS = {
     #define WINLINK_ENABLED 1
     #define WINLINK_BBS_CALLSIGN "N0BBS"   // <<< CHANGE ME: Winlink BBS callsign
     #define WINLINK_PASSWORD ""            // <<< CHANGE ME: Winlink password (if required)
+#endif
+
+// HAM_MODEM_ENABLED currently also enables the board-specific audio modem and
+// experimental Winlink adapter above. Keep that bundle out of release builds
+// until it has its own hardware and protocol-interoperability acceptance suite.
+#if PRODUCTION_BUILD && defined(HAM_MODEM_ENABLED)
+#error "HAM_MODEM_ENABLED is not production-qualified"
 #endif
 
 // --- IPFS Configuration ---

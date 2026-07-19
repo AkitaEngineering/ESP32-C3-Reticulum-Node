@@ -40,6 +40,10 @@ static constexpr size_t SIGLENGTH_BYTES       = 64;
  * Equivalent to RNS.Identity.full_hash(data) in Python.
  */
 inline void full_hash(const uint8_t* data, size_t len, uint8_t out[HASHLENGTH_BYTES]) {
+    if (!out || (!data && len != 0)) {
+        if (out) memset(out, 0, HASHLENGTH_BYTES);
+        return;
+    }
     mbedtls_sha256(data, len, out, 0 /* 0 = SHA-256, 1 = SHA-224 */);
 }
 
@@ -62,6 +66,10 @@ inline void truncated_hash(const uint8_t* data, size_t len, uint8_t out[TRUNCATE
  * @param out   10-byte output buffer
  */
 inline void name_hash(const char* name, uint8_t out[NAME_HASH_BYTES]) {
+    if (!name || !out) {
+        if (out) memset(out, 0, NAME_HASH_BYTES);
+        return;
+    }
     uint8_t full[HASHLENGTH_BYTES];
     full_hash(reinterpret_cast<const uint8_t*>(name), strlen(name), full);
     memcpy(out, full, NAME_HASH_BYTES);
@@ -102,6 +110,24 @@ inline void destination_hash(const char* app_name,
     truncated_hash(material, material_len, out);
 }
 
+/** Compute a destination hash when the 10-byte name hash is already known. */
+inline void destination_hash_from_name_hash(const uint8_t name_hash_value[NAME_HASH_BYTES],
+                                            const uint8_t* identity_hash_value,
+                                            uint8_t out[TRUNCATED_HASH_BYTES]) {
+    if (!name_hash_value || !out) {
+        if (out) memset(out, 0, TRUNCATED_HASH_BYTES);
+        return;
+    }
+    uint8_t material[NAME_HASH_BYTES + TRUNCATED_HASH_BYTES];
+    memcpy(material, name_hash_value, NAME_HASH_BYTES);
+    size_t material_len = NAME_HASH_BYTES;
+    if (identity_hash_value) {
+        memcpy(material + NAME_HASH_BYTES, identity_hash_value, TRUNCATED_HASH_BYTES);
+        material_len += TRUNCATED_HASH_BYTES;
+    }
+    truncated_hash(material, material_len, out);
+}
+
 /**
  * Compute the identity hash from a 64-byte public key.
  * identity_hash = SHA256(public_key)[:16]
@@ -118,6 +144,10 @@ inline void identity_hash(const uint8_t* public_key_64, uint8_t out[TRUNCATED_HA
  * For Header Type 2: hashable_part = (flags & 0x0F) + raw[TRUNCATED_HASH_BYTES+2:]
  */
 inline void packet_hash(const uint8_t* raw, size_t raw_len, uint8_t out[HASHLENGTH_BYTES]) {
+    if (!out || !raw || raw_len < 2) {
+        if (out) memset(out, 0, HASHLENGTH_BYTES);
+        return;
+    }
     uint8_t header_type = (raw[0] >> 6) & 0x01;
     uint8_t masked_flags = raw[0] & 0x0F;
 

@@ -7,7 +7,7 @@ loaded firmware with ESP-NOW support.
 Example:
     python tests/espnow_debug.py COM16 routes
 
-The command is sent as a LOCAL_CMD packet (context 0xFE) with the first 8
+The command is sent as a LOCAL_CMD packet (context 0xB0) with the first 8
 bytes reserved for a destination address. We use all-zero address so the
 node treats the payload as a local request.
 """
@@ -18,6 +18,7 @@ import time
 
 FEND = 0xC0
 CMD_DATA = 0x00
+LOCAL_CMD = 0xB0
 
 
 def kiss_escape(data: bytes) -> bytes:
@@ -55,9 +56,11 @@ def main():
         print(f"Failed to open {port}: {e}")
         return
 
-    # build payload: 8 zero bytes + command
-    payload = bytes([0] * 8) + cmd
-    frame = make_kiss_frame(payload)
+    # Reticulum Header Type 1: flags, hops, 16-byte destination, context, data.
+    # LOCAL_CMD is consumed only on this local KISS interface, so the header
+    # destination can be all zero; the command target prefix is also zero.
+    packet = bytes([0x00, 0x00]) + bytes(16) + bytes([LOCAL_CMD]) + bytes(8) + cmd
+    frame = make_kiss_frame(packet)
     ser.write(frame)
     print(f"Sent command '{cmd.decode()}' to device on {port}")
     # read any immediate replies for a short while

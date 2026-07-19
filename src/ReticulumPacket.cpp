@@ -1,5 +1,6 @@
 #include "ReticulumPacket.h"
 #include "Config.h"
+#include "RNSIdentity.h"
 #include <Arduino.h>
 #include <cstring>
 
@@ -9,9 +10,9 @@ namespace ReticulumPacket {
 // Header Type 1: [FLAGS 1] [HOPS 1] [DEST_HASH 16] [CONTEXT 1] [DATA]
 // Header Type 2: [FLAGS 1] [HOPS 1] [TRANSPORT_ID 16] [DEST_HASH 16] [CONTEXT 1] [DATA]
 bool deserialize(const uint8_t *buffer, size_t len, RnsPacketInfo &info) {
-    info.valid = false;
+    info = RnsPacketInfo{};
 
-    if (!buffer || len < RNS_HEADER_1_SIZE) {
+    if (!buffer || len < RNS_HEADER_1_SIZE || len > MAX_PACKET_SIZE) {
         DebugSerial.println("! Deserialize Error: Null buffer or packet too short.");
         return false;
     }
@@ -19,6 +20,10 @@ bool deserialize(const uint8_t *buffer, size_t len, RnsPacketInfo &info) {
     // Parse header
     info.flags = buffer[0];
     info.parseFlags();  // Extract bitfields from flags byte
+    if (info.ifac_flag) {
+        DebugSerial.println("! Deserialize Error: IFAC packets are not supported.");
+        return false;
+    }
 
     info.hops = buffer[1];
 
@@ -31,6 +36,7 @@ bool deserialize(const uint8_t *buffer, size_t len, RnsPacketInfo &info) {
             return false;
         }
         // transport_id at bytes 2..17, dest_hash at bytes 18..33, context at byte 34
+        memcpy(info.transport_id, buffer + 2, RNS_TRUNCATED_HASHLENGTH_BYTES);
         memcpy(info.destination_hash, buffer + 2 + RNS_TRUNCATED_HASHLENGTH_BYTES, RNS_TRUNCATED_HASHLENGTH_BYTES);
         memcpy(info.destination, buffer + 2 + RNS_TRUNCATED_HASHLENGTH_BYTES, RNS_ADDRESS_SIZE);
         info.context = buffer[2 + 2 * RNS_TRUNCATED_HASHLENGTH_BYTES]; // byte 34
@@ -70,6 +76,7 @@ bool deserialize(const uint8_t *buffer, size_t len, RnsPacketInfo &info) {
     }
 
     info.packet_len = len;
+    RNSIdentity::packet_hash(buffer, len, info.packet_hash);
     info.valid = true;
 
     return true;
@@ -97,6 +104,12 @@ bool serialize(uint8_t *buffer, size_t &len,
         return false;
     }
 
+    if (packet_type > 0x03 || dest_type > 0x03 || propagation_type > 0x01 ||
+        context_flag > 0x01 || header_type > RNS_HEADER_2) {
+        DebugSerial.println("! Serialize Error: Invalid packet flags.");
+        return false;
+    }
+
     size_t header_size = (header_type == RNS_HEADER_2) ? RNS_HEADER_2_SIZE : RNS_HEADER_1_SIZE;
     size_t total_len = header_size + data.size();
 
@@ -116,8 +129,7 @@ bool serialize(uint8_t *buffer, size_t &len,
                     ((dest_type & 0b11) << 2) |
                     ((propagation_type & 0b1) << 4) |
                     ((context_flag & 0b1) << 5) |
-                    ((header_type & 0b1) << 6) |
-                    (0 << 7);   // ifac_flag = 0 (no IFAC)
+                    ((header_type & 0b1) << 6); // ifac_flag = 0 (no IFAC)
 
     // Assemble packet
     buffer[0] = flags;

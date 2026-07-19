@@ -1,4 +1,5 @@
 param(
+    [Parameter(Mandatory=$true)][ValidatePattern('^\d+\.\d+\.\d+$')][string]$Version,
     [Parameter(Mandatory=$true)][string]$FirmwareFile,
     [Parameter(Mandatory=$true)][string]$PrivateKeyFile,
     [Parameter(Mandatory=$true)][string]$SignatureFile
@@ -22,9 +23,18 @@ New-Item -ItemType Directory -Path $tmpDir | Out-Null
 
 try {
     $digestFile = Join-Path $tmpDir "firmware.sha512.bin"
+    $signedInputFile = Join-Path $tmpDir "firmware.signed-input.bin"
     $sigBin = Join-Path $tmpDir "signature.bin"
 
-    openssl dgst -sha512 -binary -out $digestFile $FirmwareFile
+    $output = [System.IO.File]::OpenWrite($signedInputFile)
+    try {
+        $prefix = [System.Text.Encoding]::ASCII.GetBytes("RNS-OTA-V1`0$Version`0")
+        $output.Write($prefix, 0, $prefix.Length)
+        $input = [System.IO.File]::OpenRead($FirmwareFile)
+        try { $input.CopyTo($output) } finally { $input.Dispose() }
+    }
+    finally { $output.Dispose() }
+    openssl dgst -sha512 -binary -out $digestFile $signedInputFile
     openssl pkeyutl -sign -rawin -inkey $PrivateKeyFile -in $digestFile -out $sigBin
 
     $sig = [System.BitConverter]::ToString([System.IO.File]::ReadAllBytes($sigBin)).Replace("-", "").ToLowerInvariant()

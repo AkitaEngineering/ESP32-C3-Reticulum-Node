@@ -17,7 +17,7 @@
 class InterfaceManager; // Needed? Only if RoutingTable needs to call InterfaceManager for peer removal
 
 struct RouteEntry {
-    uint8_t destination_addr[RNS_ADDRESS_SIZE] = {0};
+    uint8_t destination_addr[RNS_TRUNCATED_HASHLENGTH_BYTES] = {0};
     uint8_t next_hop_mac[6] = {0};
     IPAddress next_hop_ip;
     uint16_t next_hop_port = 0;
@@ -40,20 +40,18 @@ struct RouteDiagnosticCandidate {
 };
 
 struct RouteDiagnosticGroup {
-    std::array<uint8_t, RNS_ADDRESS_SIZE> destination_addr = {0};
+    std::array<uint8_t, RNS_TRUNCATED_HASHLENGTH_BYTES> destination_addr = {0};
     std::vector<RouteDiagnosticCandidate> candidates;
 };
 
 // Structure to store recent announce IDs (announce hash + source addr prefix)
 // Used as key in std::map for loop prevention
 struct RecentAnnounceKey {
-    uint32_t packet_id;
-    uint8_t source_prefix[4]; // Use first 4 bytes of source addr
+    std::array<uint8_t, RNS_TRUNCATED_HASHLENGTH_BYTES> packet_hash = {0};
 
     // Need operator< for std::map
     bool operator<(const RecentAnnounceKey& other) const {
-        if (packet_id != other.packet_id) return packet_id < other.packet_id;
-        return memcmp(source_prefix, other.source_prefix, sizeof(source_prefix)) < 0;
+        return packet_hash < other.packet_hash;
     }
 };
 
@@ -88,8 +86,8 @@ public:
     std::vector<RouteDiagnosticGroup> getRouteDiagnostics(const std::function<bool(InterfaceType)> &isInterfaceUsable = nullptr) const;
 
     // Announce forwarding prevention
-    bool shouldForwardAnnounce(uint32_t packet_id, const uint8_t* source_addr);
-    void markAnnounceForwarded(uint32_t packet_id, const uint8_t* source_addr);
+    bool shouldForwardAnnounce(const uint8_t packet_hash[32]);
+    void markAnnounceForwarded(const uint8_t packet_hash[32]);
     void pruneRecentAnnounces(bool force = false);
 
 
@@ -99,6 +97,7 @@ private:
                                       const IPAddress& sender_ip, uint16_t sender_port);
     static int routePriority(InterfaceType interface);
     static bool isBetterRouteCandidate(const RouteEntry& candidate, const RouteEntry& currentBest);
+    bool isEspNowPeerReferenced(const uint8_t mac[6], const RouteEntry* excluding = nullptr) const;
 
     std::list<RouteEntry> _routes;
     unsigned long _last_prune_time = 0;
