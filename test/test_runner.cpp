@@ -23,6 +23,8 @@ void test_aprs_accepts_zero_coordinates(void);
 void test_ax25_frame_roundtrip(void);
 void test_ax25_six_character_callsign(void);
 void test_ax25_rejects_bad_fcs_and_truncation(void);
+void test_recent_announce_cache_is_strictly_bounded(void);
+void test_runtime_config_validation(void);
 
 void setup() {
     // On ESP32-C3 with ARDUINO_USB_MODE=1, USB CDC must be started
@@ -52,6 +54,8 @@ void setup() {
     RUN_TEST(test_ax25_frame_roundtrip);
     RUN_TEST(test_ax25_six_character_callsign);
     RUN_TEST(test_ax25_rejects_bad_fcs_and_truncation);
+    RUN_TEST(test_recent_announce_cache_is_strictly_bounded);
+    RUN_TEST(test_runtime_config_validation);
     UNITY_END();
 }
 

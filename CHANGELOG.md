@@ -18,6 +18,9 @@ Revisions are listed in reverse chronological order (most recent first).
 - Hardened HTTP parsing, exact Bearer authentication, secret redaction, atomic validated configuration writes, version-bound streaming signed OTA, and upload limits/timeouts.
 - Added per-device provisioning and release-package verification, with one raw-Ed25519 public-key ID contract.
 - Added AX.25/APRS and Fernet regression tests, hardware-acceptance CI, production build gates, static checks, and managed release documentation.
+- Bounded the recent-announce cache during fresh floods, made route and ESP-NOW eviction wrap-safe, and propagated transport rejection into link handshake/data results.
+- Centralized validation for preprovisioned and API-written configuration, exposed config health, enforced production feature invariants, and actively rolled back unhealthy pending OTA images.
+- Added Reticulum compatibility to CI, runtime-config and announce-cache regression tests, Unix announce timestamps after time sync, and C/C++ index exclusions for generated SDK/build trees.
 - Removed tracked build output and example secrets from source control and excluded generated trees from editor indexing.
 - Corrected the documented product boundary: link sessions are authenticated/encrypted but do not yet implement automatic delivery ACK/retry; HAM/audio/Winlink-style support remains experimental.
 - Classified 0.3.1 as suitable for controlled pilots only until physical HIL, OTA recovery/power-loss, Secure Boot/Flash Encryption, manufacturing, and regulatory gates pass.

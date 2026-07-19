@@ -12,7 +12,6 @@
 #include <Update.h>
 #include <monocypher.h>
 #include <optional/monocypher-ed25519.h>
-#include <cctype>
 
 extern ReticulumNode reticulumNode;
 
@@ -139,7 +138,7 @@ static String getSavedApiToken() {
     if (!SPIFFS.exists(CONFIG_PATH)) return String();
     File f = SPIFFS.open(CONFIG_PATH, FILE_READ);
     if (!f) return String();
-    DynamicJsonDocument doc(2048);
+    DynamicJsonDocument doc(4096);
     DeserializationError err = deserializeJson(doc, f);
     f.close();
     if (err) return String();
@@ -289,6 +288,12 @@ static void appendRouteDiagnostics(JsonArray destinations, const std::vector<Rou
 
 static bool checkAuth(const String &authHeader, bool allowBootstrap = false) {
 #if WEBSERVER_AUTH_ENABLED
+#if JSON_CONFIG_ENABLED
+    if (hasSavedConfig() && !validateRuntimeConfigFile(PRODUCTION_BUILD, true)) {
+        LOG_WARN("WebServer: saved configuration failed validation - denying request");
+        return false;
+    }
+#endif
     String expected;
 #if JSON_CONFIG_ENABLED
     expected = getSavedApiToken();
@@ -349,56 +354,6 @@ static bool parseContentLength(String value, int &parsed) {
         if (result > 0x7FFFFFFFu) return false;
     }
     parsed = static_cast<int>(result);
-    return true;
-}
-
-static bool isSafeConfigText(const char* value, size_t minLength, size_t maxLength) {
-    if (!value) return false;
-    const size_t length = strlen(value);
-    if (length < minLength || length > maxLength) return false;
-    for (size_t i = 0; i < length; ++i) {
-        const uint8_t c = static_cast<uint8_t>(value[i]);
-        if (c < 0x20 || c == 0x7F) return false;
-    }
-    return true;
-}
-
-static bool isValidWifiPassword(const char* password) {
-    if (!password) return false;
-    const size_t length = strlen(password);
-    if (length == 0) return true; // Explicitly configured open network.
-    if (length == 64) {
-        for (size_t i = 0; i < length; ++i) {
-            if (!isxdigit(static_cast<unsigned char>(password[i]))) return false;
-        }
-        return true;
-    }
-    return isSafeConfigText(password, 8, 63);
-}
-
-static bool isAllZero(const uint8_t* value, size_t length) {
-    uint8_t combined = 0;
-    for (size_t i = 0; i < length; ++i) combined |= value[i];
-    return combined == 0;
-}
-
-static bool validateRoutePriorities(JsonVariant routingVariant) {
-    if (routingVariant.isNull()) return true;
-    if (!routingVariant.is<JsonObject>()) return false;
-    JsonVariant prioritiesVariant = routingVariant["interface_priority"];
-    if (prioritiesVariant.isNull()) return true;
-    if (!prioritiesVariant.is<JsonObject>()) return false;
-
-    static const char* names[] = {
-        "wifi_udp", "esp_now", "lora", "ham_modem", "serial_port", "bluetooth", "ipfs"
-    };
-    JsonObject priorities = prioritiesVariant.as<JsonObject>();
-    for (const char* name : names) {
-        JsonVariant value = priorities[name];
-        if (!value.isNull() && (!value.is<int>() || value.as<int>() < -1000 || value.as<int>() > 1000)) {
-            return false;
-        }
-    }
     return true;
 }
 
@@ -531,6 +486,10 @@ void processHttpClient(WiFiClient &client) {
         doc["route_count"] = (int)routingTable.getRouteCount();
         doc["route_candidate_count"] = (int)routingTable.getRouteCandidateCount();
         doc["config_present"] = hasRuntimeConfigFile();
+        String configValidationReason;
+        const bool configValid = validateRuntimeConfigFile(PRODUCTION_BUILD, true, &configValidationReason);
+        doc["config_valid"] = configValid;
+        if (!configValid) doc["config_error"] = configValidationReason;
         doc["bootstrap_mode"] = isBootstrapMode();
         doc["wifi_connected"] = wifiConnected;
         doc["wifi_ip"] = wifiConnected ? WiFi.localIP().toString() : String("");
@@ -609,33 +568,15 @@ void processHttpClient(WiFiClient &client) {
 
     } else if (method == "POST" && path == "/api/v1/config") {
         if (!checkAuth(authHeader, ALLOW_NETWORK_BOOTSTRAP)) { sendUnauthorized(client); return; }
+        String validationReason;
+        if (!validateRuntimeConfigJson(body, PRODUCTION_BUILD, true, &validationReason)) {
+            sendResponse(client, 400, "text/plain", String("Invalid config: ") + validationReason);
+            return;
+        }
         DynamicJsonDocument doc(4096);
         DeserializationError err = deserializeJson(doc, body);
         if (err) { sendResponse(client, 400, "text/plain", "Invalid JSON"); return; }
 #if JSON_CONFIG_ENABLED
-        if (!doc.is<JsonObject>()) { sendResponse(client, 400, "text/plain", "Config must be a JSON object"); return; }
-        const char* nodeName = doc["node_name"] | "";
-        const char* appName = doc["rns_app_name"] | "";
-        JsonObject wifi = doc["wifi"];
-        JsonObject api = doc["api"];
-        const char* ssid = wifi["ssid"] | "";
-        const char* password = wifi["password"] | "";
-        const char* token = api["token"] | "";
-        const bool authEnabled = api["auth_enabled"] | false;
-        String publicKey = api["public_key"] | "";
-        uint8_t publicKeyBytes[32];
-        if (!isSafeConfigText(nodeName, 1, 47) || !isSafeConfigText(appName, 1, 63) ||
-            strlen(ssid) > 32 || !isValidWifiPassword(password) || !isSafeConfigText(token, 32, 128) ||
-            !validateRoutePriorities(doc["routing"]) ||
-            !authEnabled || isPlaceholderApiToken(String(token)) ||
-            !hexToBin(publicKey, publicKeyBytes, sizeof(publicKeyBytes)) ||
-            isAllZero(publicKeyBytes, sizeof(publicKeyBytes))) {
-            sendResponse(client, 400, "text/plain", "Invalid production config");
-            return;
-        }
-#if PRODUCTION_BUILD
-        if (strlen(ssid) == 0) { sendResponse(client, 400, "text/plain", "WiFi SSID is required"); return; }
-#endif
         SPIFFS.remove(CONFIG_NEW_PATH);
         File f = SPIFFS.open(CONFIG_NEW_PATH, FILE_WRITE);
         if (!f) { sendResponse(client, 500, "text/plain", "Failed to open config for write"); return; }

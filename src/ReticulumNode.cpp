@@ -144,6 +144,14 @@ void ReticulumNode::setup() {
     _webServerManager.begin();
 #endif
 
+#if PRODUCTION_BUILD
+    String configValidationReason;
+    const bool productionConfigValid = validateRuntimeConfigFile(true, true, &configValidationReason);
+    if (!productionConfigValid) {
+        LOG_ERROR("Production configuration invalid: %s", configValidationReason.c_str());
+    }
+#endif
+
     // The pinned ESP32 framework enables bootloader rollback. Confirm a newly
     // booted OTA slot only after identity, interfaces, and management services
     // have completed their initialization.
@@ -155,8 +163,13 @@ void ReticulumNode::setup() {
 #if WEBSERVER_ENABLED
         startupHealthy = startupHealthy && _webServerManager.isStarted();
 #endif
+#if PRODUCTION_BUILD
+        startupHealthy = startupHealthy && productionConfigValid;
+#endif
         if (!startupHealthy) {
-            LOG_ERROR("Pending OTA image failed startup health checks; rollback remains armed");
+            LOG_ERROR("Pending OTA image failed startup health checks; rolling back");
+            const esp_err_t rollbackResult = esp_ota_mark_app_invalid_rollback_and_reboot();
+            LOG_ERROR("Failed to trigger OTA rollback: %s", esp_err_to_name(rollbackResult));
         } else if (esp_ota_mark_app_valid_cancel_rollback() != ESP_OK) {
             LOG_ERROR("Failed to confirm the pending OTA image");
         }

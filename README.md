@@ -134,12 +134,12 @@ pio run -e esp32-c3-devkitm-1
 
 The default production target is `esp32-c3-prod-managed`. It reads `/config.json` from SPIFFS before network initialization.
 
-- `node_name`: optional. Leave empty to use the per-device MAC-derived default such as `rns-6497AC`.
-- `rns_app_name`: optional Reticulum application name. Defaults to `esp32.node`.
+- `node_name`: required for managed production; use a unique safe name of 1–47 characters. Offline builds may omit it to use the MAC-derived default such as `rns-6497AC`.
+- `rns_app_name`: required for managed production; use a safe Reticulum application name of 1–63 characters.
 - `wifi.ssid` / `wifi.password`: boot-time WiFi station credentials.
 - `api.token`: required per-device API token (at least 32 characters).
 - `api.public_key`: required 32-byte Ed25519 OTA public key in hex.
-- `data/config.example.json`: editable template for provisioning or per-device variants.
+- `data/config.example.json`: editable template only; its `CHANGE_ME` values and empty OTA key are deliberately rejected by managed production firmware.
 
 For a factory filesystem upload, temporarily stage the generated file as the ignored `data/config.json`, upload it, and remove the staged copy:
 

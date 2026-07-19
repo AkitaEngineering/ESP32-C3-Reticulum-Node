@@ -37,7 +37,7 @@ The canonical `esp32-c3-prod-managed` artifact enables USB KISS, ESP-NOW, WiFi U
 
 `RoutingTable` stores bounded candidate paths per destination. Selection is ordered by hop count, configured interface priority, and freshness. A candidate records its ingress interface and interface-specific next-hop metadata such as ESP-NOW MAC or UDP address/port. Interface health is considered during selection. Routes expire after three missed 30-second announces plus 15 seconds (105 seconds by default).
 
-Announces are forwarded only once within the recent-announce window. Normal packet forwarding uses the packet hash for duplicate suppression and preserves Header Type 1/2, propagation, destination, context flag, context, and payload.
+Announces are forwarded only once within the recent-announce window. The recent-announce cache has a strict entry ceiling as well as time-based expiry, including during a flood of fresh valid announces. Freshness and eviction use wrap-safe uptime ages. Normal packet forwarding uses the packet hash for duplicate suppression and preserves Header Type 1/2, propagation, destination, context flag, context, and payload.
 
 ## Interface behavior
 
@@ -56,9 +56,9 @@ Fernet-style tokens authenticate IV and ciphertext with HMAC-SHA256 and use AES-
 
 ## Control and update plane
 
-The HTTP server is a small synchronous REST implementation, not a browser UI. It limits request/header/body sizes, rejects ambiguous security headers, requires exact Bearer authentication, redacts secrets from reads, validates complete production configuration, and commits configuration through a verified temporary file.
+The HTTP server is a small synchronous REST implementation, not a browser UI. It limits request/header/body sizes, rejects ambiguous security headers, requires exact Bearer authentication, redacts secrets from reads, validates both preprovisioned and API-submitted configuration through one validator, and commits configuration through a verified temporary file. A malformed saved configuration fails authentication closed and is reported through startup diagnostics.
 
-OTA uploads are streamed to SPIFFS, hashed with a version-bound domain separator, verified with the provisioned Ed25519 public key, and only then passed to the ESP update API. Version comparison rejects replay and downgrade. The HTTP plane is plaintext and must live behind an encrypted trusted management boundary.
+OTA uploads are streamed to SPIFFS, hashed with a version-bound domain separator, verified with the provisioned Ed25519 public key, and only then passed to the ESP update API. Version comparison rejects replay and downgrade. A pending OTA slot is confirmed only after identity, interfaces, management services, and production configuration pass startup checks; otherwise the firmware actively requests rollback and reboot. The HTTP plane is plaintext and must live behind an encrypted trusted management boundary.
 
 ## Concurrency and resource bounds
 

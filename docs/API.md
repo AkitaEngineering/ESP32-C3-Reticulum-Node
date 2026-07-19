@@ -27,7 +27,7 @@ Common response codes
 Endpoints
 
 - `GET /api/v1/status`
-  - Returns JSON with node status metrics, provisioning state, and per-interface health snapshots (uptime, free heap, link counts, route count, stable device ID, config presence, bootstrap mode, WiFi state, restart-required state, interface support/usability, packet counters, and last RX/TX uptime timestamps).
+  - Returns JSON with node status metrics, provisioning state, and per-interface health snapshots (uptime, free heap, link counts, route count, stable device ID, config presence/validity, bootstrap mode, WiFi state, restart-required state, interface support/usability, packet counters, and last RX/TX uptime timestamps). `config_error` is present when validation fails.
   - Auth: always required in production.
 
 - `GET /api/v1/routes`
@@ -126,6 +126,7 @@ API request/response schemas
   "route_count": 12,
   "route_candidate_count": 16,
   "config_present": true,
+  "config_valid": true,
   "bootstrap_mode": false,
   "wifi_connected": true,
   "wifi_ip": "192.168.1.42",

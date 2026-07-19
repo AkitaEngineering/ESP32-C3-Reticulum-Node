@@ -56,6 +56,6 @@ The first 32 derived bytes are the HMAC key and the next 32 are the AES key. HMA
 
 ## Delivery semantics
 
-`sendLinkData()` performs one encrypted send. There is no sequence window, ACK queue, retry timer, fragmentation/resource protocol, or guaranteed in-order delivery in this firmware. Applications that require confirmed delivery must add an application-level acknowledgement/retry contract or use a full Reticulum implementation that supplies the missing delivery-proof/resource mechanisms.
+`sendLinkData()` performs one encrypted send and returns false if the selected transport rejects the packet. A true return means the transport accepted the packet locally; it is not end-to-end delivery confirmation. Handshake packets likewise fail their state transition when the bound transport rejects them. There is no sequence window, ACK queue, retry timer, fragmentation/resource protocol, or guaranteed in-order delivery in this firmware. Applications that require confirmed delivery must add an application-level acknowledgement/retry contract or use a full Reticulum implementation that supplies the missing delivery-proof/resource mechanisms.
 
 Hardware acceptance must exercise link establishment, forged-proof rejection, cross-interface injection rejection, negotiated-MTU rejection, encrypted payload exchange, inactivity cleanup, and link close on two physical devices.

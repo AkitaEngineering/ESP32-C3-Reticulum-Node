@@ -220,6 +220,27 @@ extern DebugSerialShim DebugSerial; // Use USB/UART0 for debug (Arduino Serial M
 #define WEBSERVER_AUTH_ENABLED 1
 #endif
 
+#if PRODUCTION_BUILD
+    #if !WEBSERVER_ENABLED
+        #error "PRODUCTION_BUILD requires WEBSERVER_ENABLED"
+    #endif
+    #if !JSON_CONFIG_ENABLED
+        #error "PRODUCTION_BUILD requires JSON_CONFIG_ENABLED"
+    #endif
+    #if !OTA_ENABLED
+        #error "PRODUCTION_BUILD requires OTA_ENABLED"
+    #endif
+    #if !WEBSERVER_AUTH_ENABLED
+        #error "PRODUCTION_BUILD requires bearer authentication"
+    #endif
+    #if DEBUG_ENABLED
+        #error "PRODUCTION_BUILD requires DEBUG_ENABLED=0"
+    #endif
+    #if DEMO_TRAFFIC_ENABLED
+        #error "PRODUCTION_BUILD requires DEMO_TRAFFIC_ENABLED=0"
+    #endif
+#endif
+
 // BLE provisioning (GATT) for WiFi / callsign setup
 #ifndef BLE_PROVISIONING_ENABLED
 #define BLE_PROVISIONING_ENABLED 0
@@ -328,6 +349,10 @@ const char* getConfiguredWiFiPassword();
 const RoutePriorityConfig& getConfiguredRoutePriorities();
 void reloadRuntimeConfigCache();
 bool hasRuntimeConfigFile();
+bool validateRuntimeConfigJson(const String& json, bool requireWifi, bool requireManagement,
+                               String* errorReason = nullptr);
+bool validateRuntimeConfigFile(bool requireWifi, bool requireManagement,
+                               String* errorReason = nullptr);
 
 // Derive Reticulum node address from the chip eFuse MAC on boot.
 // This prevents duplicate logical node addresses when flash/EEPROM images are cloned.

@@ -19,6 +19,7 @@
 #include <cstdint>
 #include <cstddef>
 #include <cstring>
+#include <ctime>
 #include <vector>
 #include <EEPROM.h>
 #include <monocypher.h>
@@ -314,9 +315,14 @@ public:
         random_hash[2] = (r1 >> 16) & 0xFF;
         random_hash[3] = (r1 >> 24) & 0xFF;
         random_hash[4] = (r2 >> 0) & 0xFF;
-        // Low 5 bytes of seconds-since-boot as a rough timestamp.
-        // Use 64-bit storage so the top byte is defined on 32-bit targets.
-        uint64_t ts = static_cast<uint64_t>(millis()) / 1000ULL;
+        // Use the reference Unix timestamp once SNTP has established a sane
+        // wall clock. Offline nodes retain an uptime fallback; the preceding
+        // five random bytes preserve uniqueness until time is synchronized.
+        const time_t wall_clock = time(nullptr);
+        const bool wall_clock_valid = wall_clock >= static_cast<time_t>(1577836800); // 2020-01-01 UTC
+        uint64_t ts = wall_clock_valid
+            ? static_cast<uint64_t>(wall_clock)
+            : static_cast<uint64_t>(millis()) / 1000ULL;
         random_hash[5] = (ts >> 32) & 0xFF;
         random_hash[6] = (ts >> 24) & 0xFF;
         random_hash[7] = (ts >> 16) & 0xFF;

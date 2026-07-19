@@ -1,5 +1,5 @@
 {
-  "node_name": "",
+  "node_name": "CHANGE_ME_unique_node_name",
   "rns_app_name": "esp32.node",
   "wifi": {
     "ssid": "YOUR_SSID",
@@ -28,6 +28,6 @@
   "api": {
     "auth_enabled": true,
     "token": "CHANGE_ME_generate_a_strong_token",
-    "public_key": ""  
+    "public_key": ""
   }
 }

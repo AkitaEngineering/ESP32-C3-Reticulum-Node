@@ -234,14 +234,13 @@ void LinkManager::removeLink(const uint8_t link_id[16]) {
 const uint8_t* LinkManager::getNodeAddress() const { return _ownerRef.getNodeAddress(); }
 uint16_t LinkManager::getNextPacketId() { return _ownerRef.getNextPacketId(); }
 
-void LinkManager::sendPacketRaw(const uint8_t* buffer, size_t len, const uint8_t* destination,
+bool LinkManager::sendPacketRaw(const uint8_t* buffer, size_t len, const uint8_t* destination,
                                 InterfaceType interface) {
-    if (!buffer || len == 0 || !destination) return;
+    if (!buffer || len == 0 || !destination) return false;
     if (interface == InterfaceType::UNKNOWN) {
-        _ownerRef.getInterfaceManager().sendPacket(buffer, len, destination, InterfaceType::UNKNOWN);
-    } else {
-        _ownerRef.getInterfaceManager().sendPacketVia(interface, buffer, len, destination);
+        return _ownerRef.getInterfaceManager().sendPacket(buffer, len, destination, InterfaceType::UNKNOWN);
     }
+    return _ownerRef.getInterfaceManager().sendPacketVia(interface, buffer, len, destination);
 }
 
 void LinkManager::processReceivedLinkData(const uint8_t* link_id, const std::vector<uint8_t>& data) {

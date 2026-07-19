@@ -5,6 +5,7 @@
 #include <Arduino.h> // For millis(), Serial
 #include <algorithm> // For std::min_element
 #include <cstring>   // For memcpy
+#include <iterator>  // For std::next
 
 // Constructor
 RoutingTable::RoutingTable() : _last_prune_time(0), _last_recent_announce_prune(0) {}
@@ -56,7 +57,8 @@ bool RoutingTable::isBetterRouteCandidate(const RouteEntry& candidate, const Rou
         return candidatePriority > currentPriority;
     }
 
-    return candidate.last_heard_time > currentBest.last_heard_time;
+    const unsigned long now = millis();
+    return (now - candidate.last_heard_time) < (now - currentBest.last_heard_time);
 }
 
 bool RoutingTable::isEspNowPeerReferenced(const uint8_t mac[6], const RouteEntry* excluding) const {
@@ -129,9 +131,9 @@ void RoutingTable::update(const RnsPacketInfo &announcePacket, InterfaceType int
             _routes.push_back(newEntry);
         } else {
             // Table full - Replace oldest entry
-            auto oldest_it = std::min_element(_routes.begin(), _routes.end(),
-                [](const RouteEntry& a, const RouteEntry& b) {
-                    return a.last_heard_time < b.last_heard_time;
+            auto oldest_it = std::max_element(_routes.begin(), _routes.end(),
+                [now](const RouteEntry& a, const RouteEntry& b) {
+                    return (now - a.last_heard_time) < (now - b.last_heard_time);
                 });
 
               if (oldest_it != _routes.end()) {
@@ -323,7 +325,7 @@ std::vector<RouteDiagnosticGroup> RoutingTable::getRouteDiagnostics(const std::f
         if (candidate.interface_priority != currentBest.interface_priority) {
             return candidate.interface_priority > currentBest.interface_priority;
         }
-        return candidate.last_heard_uptime_ms > currentBest.last_heard_uptime_ms;
+        return candidate.age_ms < currentBest.age_ms;
     };
 
     for (auto& group : groups) {
@@ -372,6 +374,16 @@ void RoutingTable::pruneRecentAnnounces(bool force) {
     for (auto it = _recentAnnounces.begin(); it != _recentAnnounces.end(); ) {
         if (now - it->second > RECENT_ANNOUNCE_TIMEOUT_MS) { it = _recentAnnounces.erase(it); }
         else { ++it; }
+    }
+
+    // A burst of fresh, valid announces must not grow this cache without
+    // bound. Expiry alone cannot enforce the configured memory ceiling.
+    while (_recentAnnounces.size() > MAX_RECENT_ANNOUNCES) {
+        auto oldest = _recentAnnounces.begin();
+        for (auto it = std::next(_recentAnnounces.begin()); it != _recentAnnounces.end(); ++it) {
+            if ((now - it->second) > (now - oldest->second)) oldest = it;
+        }
+        _recentAnnounces.erase(oldest);
     }
     _last_recent_announce_prune = now;
 }

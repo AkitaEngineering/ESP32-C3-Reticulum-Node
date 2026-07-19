@@ -434,8 +434,9 @@ void InterfaceManager::handleKissPacket(const std::vector<uint8_t>& packetData, 
 
 
 // --- Sending Logic ---
-void InterfaceManager::sendPacket(const uint8_t *packetBuffer, size_t packetLen, const uint8_t *destinationAddr, InterfaceType excludeInterface) {
-    if (!packetBuffer || packetLen == 0) return;
+bool InterfaceManager::sendPacket(const uint8_t *packetBuffer, size_t packetLen, const uint8_t *destinationAddr, InterfaceType excludeInterface) {
+    if (!packetBuffer || packetLen == 0) return false;
+    bool accepted = false;
 
     // Determine target interface(s) based on routing (or broadcast if unknown)
     RouteEntry* route = _routingTableRef.findRoute(
@@ -450,79 +451,86 @@ void InterfaceManager::sendPacket(const uint8_t *packetBuffer, size_t packetLen,
     if (route) {
         if (route->interface != excludeInterface) {
              // Send only via the routed interface
-             sendPacketVia(route->interface, packetBuffer, packetLen, destinationAddr);
+             accepted = sendPacketVia(route->interface, packetBuffer, packetLen, destinationAddr);
         }
         // In TNC mode, also bridge to serial so the host sees all traffic,
         // unless the packet already came from serial or is routed to serial.
         if (excludeInterface != InterfaceType::SERIAL_PORT &&
             route->interface != InterfaceType::SERIAL_PORT) {
-            sendPacketViaSerial(packetBuffer, packetLen);
+            (void)sendPacketViaSerial(packetBuffer, packetLen);
         }
     } else {
         // No route, broadcast on primary interfaces (excluding source)
         // DebugSerial.print("Broadcasting packet (no route found) for dest: "); Utils::printBytes(destinationAddr, RNS_ADDRESS_SIZE, DebugSerial); DebugSerial.println(); // Verbose
         if (_espNowInitialized && excludeInterface != InterfaceType::ESP_NOW) {
-            sendPacketViaEspNow(packetBuffer, packetLen, nullptr); // Broadcast = null dest for internal func
+            accepted = sendPacketViaEspNow(packetBuffer, packetLen, nullptr) || accepted; // Broadcast = null dest for internal func
         }
         if (WiFi.status() == WL_CONNECTED && excludeInterface != InterfaceType::WIFI_UDP) {
-             sendPacketViaWiFi(packetBuffer, packetLen, nullptr); // Broadcast = null dest for internal func
+             accepted = sendPacketViaWiFi(packetBuffer, packetLen, nullptr) || accepted; // Broadcast = null dest for internal func
         }
 #ifdef LORA_ENABLED
         if (_loraInitialized && excludeInterface != InterfaceType::LORA) {
-            sendPacketViaLoRa(packetBuffer, packetLen, nullptr);
+            accepted = sendPacketViaLoRa(packetBuffer, packetLen, nullptr) || accepted;
         }
 #endif
         // Bridge packets to serial KISS (USB) so the host receives them
-        if (excludeInterface != InterfaceType::SERIAL_PORT) { sendPacketViaSerial(packetBuffer, packetLen); }
+        if (excludeInterface != InterfaceType::SERIAL_PORT) {
+            accepted = sendPacketViaSerial(packetBuffer, packetLen) || accepted;
+        }
 #if BLUETOOTH_CLASSIC_AVAILABLE
         // if (_serialBT.connected() && excludeInterface != InterfaceType::BLUETOOTH) { sendPacketViaBluetooth(packetBuffer, packetLen); }
 #endif
     }
+    return accepted;
 }
 
-void InterfaceManager::sendPacketVia(InterfaceType ifType, const uint8_t *packetBuffer, size_t packetLen, const uint8_t *destinationAddr) {
-     if (!packetBuffer || packetLen == 0) return;
+bool InterfaceManager::sendPacketVia(InterfaceType ifType, const uint8_t *packetBuffer, size_t packetLen, const uint8_t *destinationAddr) {
+     if (!packetBuffer || packetLen == 0) return false;
      switch(ifType) {
-        case InterfaceType::ESP_NOW:  if (_espNowInitialized) sendPacketViaEspNow(packetBuffer, packetLen, destinationAddr); break;
-        case InterfaceType::WIFI_UDP: if (WiFi.status() == WL_CONNECTED) sendPacketViaWiFi(packetBuffer, packetLen, destinationAddr); break;
-        case InterfaceType::SERIAL_PORT:   sendPacketViaSerial(packetBuffer, packetLen); break;
+        case InterfaceType::ESP_NOW:  return _espNowInitialized && sendPacketViaEspNow(packetBuffer, packetLen, destinationAddr);
+        case InterfaceType::WIFI_UDP: return WiFi.status() == WL_CONNECTED && sendPacketViaWiFi(packetBuffer, packetLen, destinationAddr);
+        case InterfaceType::SERIAL_PORT: return sendPacketViaSerial(packetBuffer, packetLen);
 #if BLUETOOTH_CLASSIC_AVAILABLE
-        case InterfaceType::BLUETOOTH:sendPacketViaBluetooth(packetBuffer, packetLen); break;
+        case InterfaceType::BLUETOOTH: return sendPacketViaBluetooth(packetBuffer, packetLen);
 #endif
 #ifdef LORA_ENABLED
-        case InterfaceType::LORA: sendPacketViaLoRa(packetBuffer, packetLen, destinationAddr); break;
+        case InterfaceType::LORA: return sendPacketViaLoRa(packetBuffer, packetLen, destinationAddr);
 #endif
 #ifdef HAM_MODEM_ENABLED
-        case InterfaceType::HAM_MODEM: sendPacketViaHAMModem(packetBuffer, packetLen); break;
+        case InterfaceType::HAM_MODEM: return sendPacketViaHAMModem(packetBuffer, packetLen);
 #endif
 #ifdef IPFS_ENABLED
-        case InterfaceType::IPFS: sendPacketViaIPFS(packetBuffer, packetLen, destinationAddr); break;
+        case InterfaceType::IPFS: return sendPacketViaIPFS(packetBuffer, packetLen, destinationAddr);
 #endif
-        default: DebugSerial.print("! WARN: sendPacketVia unsupported interface: "); DebugSerial.println(static_cast<int>(ifType)); break;
+        default: DebugSerial.print("! WARN: sendPacketVia unsupported interface: "); DebugSerial.println(static_cast<int>(ifType)); return false;
      }
 }
 
-void InterfaceManager::broadcastAnnounce(const uint8_t *packetBuffer, size_t packetLen, InterfaceType excludeInterface) {
-     if (!packetBuffer || packetLen == 0) return;
+bool InterfaceManager::broadcastAnnounce(const uint8_t *packetBuffer, size_t packetLen, InterfaceType excludeInterface) {
+     if (!packetBuffer || packetLen == 0) return false;
+     bool accepted = false;
      // Use nullptr destination for broadcast variants
      if (_espNowInitialized && excludeInterface != InterfaceType::ESP_NOW) {
-         sendPacketViaEspNow(packetBuffer, packetLen, nullptr);
+         accepted = sendPacketViaEspNow(packetBuffer, packetLen, nullptr) || accepted;
      }
      if (WiFi.status() == WL_CONNECTED && excludeInterface != InterfaceType::WIFI_UDP) {
-         sendPacketViaWiFi(packetBuffer, packetLen, nullptr);
+         accepted = sendPacketViaWiFi(packetBuffer, packetLen, nullptr) || accepted;
      }
 #ifdef LORA_ENABLED
      if (_loraInitialized && excludeInterface != InterfaceType::LORA) {
-         sendPacketViaLoRa(packetBuffer, packetLen, nullptr);
+         accepted = sendPacketViaLoRa(packetBuffer, packetLen, nullptr) || accepted;
      }
 #endif
 #ifdef HAM_MODEM_ENABLED
      if (_hamModemInitialized && excludeInterface != InterfaceType::HAM_MODEM) {
-         sendPacketViaHAMModem(packetBuffer, packetLen);
+         accepted = sendPacketViaHAMModem(packetBuffer, packetLen) || accepted;
      }
 #endif
      // Always send announces via serial KISS (USB/UART)
-     if (excludeInterface != InterfaceType::SERIAL_PORT) sendPacketViaSerial(packetBuffer, packetLen);
+     if (excludeInterface != InterfaceType::SERIAL_PORT) {
+         accepted = sendPacketViaSerial(packetBuffer, packetLen) || accepted;
+     }
+     return accepted;
 }
 
 // Internal send implementations
@@ -631,8 +639,8 @@ bool InterfaceManager::sendPacketViaEspNowInternal(const uint8_t *packetBuffer, 
     return true;
 }
 
-void InterfaceManager::sendPacketViaWiFi(const uint8_t *packetBuffer, size_t packetLen, const uint8_t *destinationAddr) {
-     if (WiFi.status() != WL_CONNECTED) return;
+bool InterfaceManager::sendPacketViaWiFi(const uint8_t *packetBuffer, size_t packetLen, const uint8_t *destinationAddr) {
+     if (WiFi.status() != WL_CONNECTED || !packetBuffer || packetLen == 0) return false;
 
     IPAddress targetIp;
     uint16_t targetPort = RNS_UDP_PORT;
@@ -649,14 +657,22 @@ void InterfaceManager::sendPacketViaWiFi(const uint8_t *packetBuffer, size_t pac
 
     if (!targetIp || targetIp == INADDR_NONE) {
         DebugSerial.println("! WARN: UDP Target IP is invalid, cannot send.");
-        return;
+        return false;
     }
 
-    _udp.beginPacket(targetIp, targetPort);
+    if (!_udp.beginPacket(targetIp, targetPort)) return false;
     size_t sent = _udp.write(packetBuffer, packetLen);
-    if (sent != packetLen) { DebugSerial.print("! WARN: UDP write incomplete (sent "); DebugSerial.print(sent); DebugSerial.print("/"); DebugSerial.print(packetLen); DebugSerial.println(" bytes)"); }
-    if (!_udp.endPacket()) { DebugSerial.println("! ERROR: UDP endPacket failed!"); }
-    else { recordInterfaceTx(InterfaceType::WIFI_UDP, packetLen); }
+    if (sent != packetLen) {
+        DebugSerial.print("! WARN: UDP write incomplete (sent "); DebugSerial.print(sent); DebugSerial.print("/"); DebugSerial.print(packetLen); DebugSerial.println(" bytes)");
+        (void)_udp.endPacket();
+        return false;
+    }
+    if (!_udp.endPacket()) {
+        DebugSerial.println("! ERROR: UDP endPacket failed!");
+        return false;
+    }
+    recordInterfaceTx(InterfaceType::WIFI_UDP, packetLen);
+    return true;
 }
 
 bool InterfaceManager::enqueueEspNowPacket(const uint8_t *packetBuffer, size_t packetLen, const uint8_t *destinationAddr) {
@@ -741,14 +757,15 @@ void InterfaceManager::sendUdpMetrics(const String &json) {
 #endif
 
 // KISS interface sends packaets over dedicated serial link
-void InterfaceManager::sendPacketViaSerial(const uint8_t *packetBuffer, size_t packetLen) {
+bool InterfaceManager::sendPacketViaSerial(const uint8_t *packetBuffer, size_t packetLen) {
+    if (!packetBuffer || packetLen == 0) return false;
     std::vector<uint8_t> kissEncoded;
     KISSProcessor::encode(packetBuffer, packetLen, kissEncoded);
 #if defined(KISS_OVER_USB)
     size_t written = KissSerial.write(kissEncoded.data(), kissEncoded.size());
     if (written == kissEncoded.size()) {
         recordInterfaceTx(InterfaceType::SERIAL_PORT, packetLen);
-        return;
+        return true;
     }
 
     if (written > 0 && written < kissEncoded.size()) {
@@ -761,7 +778,7 @@ void InterfaceManager::sendPacketViaSerial(const uint8_t *packetBuffer, size_t p
         }
         _pendingUsbKissFrames.push_back(std::move(kissEncoded));
         recordInterfaceTx(InterfaceType::SERIAL_PORT, packetLen);
-        return;
+        return true;
     }
 
     if (_pendingUsbKissFrames.size() >= MAX_PENDING_USB_KISS_FRAMES) {
@@ -769,11 +786,15 @@ void InterfaceManager::sendPacketViaSerial(const uint8_t *packetBuffer, size_t p
     }
     _pendingUsbKissFrames.push_back(std::move(kissEncoded));
     recordInterfaceTx(InterfaceType::SERIAL_PORT, packetLen);
-    return;
+    return true;
 #endif
-    (void)KissSerial.write(kissEncoded.data(), kissEncoded.size()); // ignore return value
+    const size_t sent = KissSerial.write(kissEncoded.data(), kissEncoded.size());
+    if (sent != kissEncoded.size()) {
+        DebugSerial.println("! WARN: Serial write incomplete");
+        return false;
+    }
     recordInterfaceTx(InterfaceType::SERIAL_PORT, packetLen);
-    // if(sent != kissEncoded.size()) { DebugSerial.println("! WARN: Serial write incomplete"); } // Optional check
+    return true;
 }
 
 #if defined(KISS_OVER_USB)
@@ -833,15 +854,14 @@ bool InterfaceManager::isInterfaceUsableForRouting(InterfaceType ifType) const {
 }
 
 #if BLUETOOTH_CLASSIC_AVAILABLE
-void InterfaceManager::sendPacketViaBluetooth(const uint8_t *packetBuffer, size_t packetLen) {
-    if (!_serialBT.connected()) return;
+bool InterfaceManager::sendPacketViaBluetooth(const uint8_t *packetBuffer, size_t packetLen) {
+    if (!_serialBT.connected() || !packetBuffer || packetLen == 0) return false;
     std::vector<uint8_t> kissEncoded;
     KISSProcessor::encode(packetBuffer, packetLen, kissEncoded);
     size_t sent = _serialBT.write(kissEncoded.data(), kissEncoded.size());
-    if (sent > 0) {
-        recordInterfaceTx(InterfaceType::BLUETOOTH, packetLen);
-    }
-     // if(sent != kissEncoded.size()) { DebugSerial.println("! WARN: Bluetooth write incomplete"); } // Optional check
+    if (sent != kissEncoded.size()) return false;
+    recordInterfaceTx(InterfaceType::BLUETOOTH, packetLen);
+    return true;
 }
 #endif
 
@@ -1005,11 +1025,13 @@ InterfaceManager::EspNowRxAssembly* InterfaceManager::getEspNowAssemblySlot(cons
         return &_espNowRxAssemblies.back();
     }
 
+    const unsigned long now = millis();
     size_t oldestIndex = 0;
-    unsigned long oldestTime = _espNowRxAssemblies[0].lastUpdateMs;
+    unsigned long oldestAge = now - _espNowRxAssemblies[0].lastUpdateMs;
     for (size_t i = 1; i < _espNowRxAssemblies.size(); ++i) {
-        if (_espNowRxAssemblies[i].lastUpdateMs < oldestTime) {
-            oldestTime = _espNowRxAssemblies[i].lastUpdateMs;
+        const unsigned long age = now - _espNowRxAssemblies[i].lastUpdateMs;
+        if (age > oldestAge) {
+            oldestAge = age;
             oldestIndex = i;
         }
     }
@@ -1327,14 +1349,15 @@ void InterfaceManager::processLoRaInput() {
     }
 }
 
-void InterfaceManager::sendPacketViaLoRa(const uint8_t *packetBuffer, size_t packetLen, const uint8_t *destinationAddr) {
-    if (!_loraInitialized || !_lora || !packetBuffer || packetLen == 0) return;
+bool InterfaceManager::sendPacketViaLoRa(const uint8_t *packetBuffer, size_t packetLen, const uint8_t *destinationAddr) {
+    if (!_loraInitialized || !_lora || !packetBuffer || packetLen == 0) return false;
     
     // LoRa is broadcast by nature, so destinationAddr is not used here.
     
     // Send packet
     int state = _lora->transmit(packetBuffer, packetLen);
-    if (state == RADIOLIB_ERR_NONE) {
+    const bool sent = state == RADIOLIB_ERR_NONE;
+    if (sent) {
         // Success - packet sent
         recordInterfaceTx(InterfaceType::LORA, packetLen);
         // DebugSerial.println("IF: LoRa packet sent successfully.");
@@ -1344,6 +1367,7 @@ void InterfaceManager::sendPacketViaLoRa(const uint8_t *packetBuffer, size_t pac
     }
     // Re-enter RX mode after transmit (transmit leaves radio in standby)
     _lora->startReceive();
+    return sent;
 }
 #endif
 
@@ -1457,8 +1481,8 @@ void InterfaceManager::audioCaptureLoop() {
 }
 #endif
 
-void InterfaceManager::sendPacketViaHAMModem(const uint8_t *packetBuffer, size_t packetLen) {
-    if (!_hamModemInitialized || !packetBuffer || packetLen == 0) return;
+bool InterfaceManager::sendPacketViaHAMModem(const uint8_t *packetBuffer, size_t packetLen) {
+    if (!_hamModemInitialized || !packetBuffer || packetLen == 0) return false;
     
     // Encode packet with KISS framing
     std::vector<uint8_t> kissEncoded;
@@ -1469,9 +1493,9 @@ void InterfaceManager::sendPacketViaHAMModem(const uint8_t *packetBuffer, size_t
     if (sent != kissEncoded.size()) {
         DebugSerial.println("! WARN: HAM Modem write incomplete");
     }
-    if (sent > 0) {
-        recordInterfaceTx(InterfaceType::HAM_MODEM, packetLen);
-    }
+    if (sent != kissEncoded.size()) return false;
+    recordInterfaceTx(InterfaceType::HAM_MODEM, packetLen);
+    return true;
 }
 
 // Helper: build AX.25 UI frame for APRS (dest defaults to "APRS-0")
@@ -1814,20 +1838,20 @@ bool InterfaceManager::publishToIPFS(const uint8_t* data, size_t len, String& ip
 #endif
 }
 
-void InterfaceManager::sendPacketViaIPFS(const uint8_t *packetBuffer, size_t packetLen, const uint8_t *destinationAddr) {
+bool InterfaceManager::sendPacketViaIPFS(const uint8_t *packetBuffer, size_t packetLen, const uint8_t *destinationAddr) {
     if (!_ipfsInitialized) {
         DebugSerial.println("! WARN: IPFS not initialized, cannot send packet");
-        return;
+        return false;
     }
 
     String ipfsHash;
     if (!publishToIPFS(packetBuffer, packetLen, ipfsHash)) {
         DebugSerial.println("! ERROR: Failed to publish packet to IPFS");
-        return;
+        return false;
     }
     if (ipfsHash.length() == 0) {
         DebugSerial.println("! ERROR: IPFS hash is empty");
-        return;
+        return false;
     }
 
     RnsPacketInfo info;
@@ -1844,7 +1868,7 @@ void InterfaceManager::sendPacketViaIPFS(const uint8_t *packetBuffer, size_t pac
     std::vector<uint8_t> payload(reference.begin(), reference.end());
     if (payload.size() > RNS_MAX_PAYLOAD) {
         DebugSerial.println("! ERROR: IPFS reference payload too large");
-        return;
+        return false;
     }
 
     uint8_t refBuffer[MAX_PACKET_SIZE];
@@ -1857,7 +1881,7 @@ void InterfaceManager::sendPacketViaIPFS(const uint8_t *packetBuffer, size_t pac
 
     if (!ReticulumPacket::serialize(refBuffer, refLen, destHash, packetType, destType, propagationType, context, hops, payload)) {
         DebugSerial.println("! ERROR: Failed to serialize IPFS reference packet");
-        return;
+        return false;
     }
 
     RouteEntry* route = nullptr;
@@ -1866,25 +1890,26 @@ void InterfaceManager::sendPacketViaIPFS(const uint8_t *packetBuffer, size_t pac
     }
 
     if (route && route->interface != InterfaceType::IPFS) {
-        sendPacketVia(route->interface, refBuffer, refLen, destinationAddr);
-        return;
+        return sendPacketVia(route->interface, refBuffer, refLen, destinationAddr);
     }
 
     if (destinationAddr == nullptr || !route || route->interface == InterfaceType::IPFS) {
-        sendPacketViaEspNow(refBuffer, refLen, destinationAddr);
+        bool accepted = sendPacketViaEspNow(refBuffer, refLen, destinationAddr);
         if (WiFi.status() == WL_CONNECTED) {
-            sendPacketViaWiFi(refBuffer, refLen, destinationAddr);
+            accepted = sendPacketViaWiFi(refBuffer, refLen, destinationAddr) || accepted;
         }
 #ifdef LORA_ENABLED
         if (_loraInitialized) {
-            sendPacketViaLoRa(refBuffer, refLen, destinationAddr);
+            accepted = sendPacketViaLoRa(refBuffer, refLen, destinationAddr) || accepted;
         }
 #endif
 #ifdef HAM_MODEM_ENABLED
         if (_hamModemInitialized) {
-            sendPacketViaHAMModem(refBuffer, refLen);
+            accepted = sendPacketViaHAMModem(refBuffer, refLen) || accepted;
         }
 #endif
+        return accepted;
     }
+    return false;
 }
 #endif

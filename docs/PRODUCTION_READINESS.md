@@ -22,10 +22,11 @@ The 0.3.1 release-candidate source passed the following local software gates on 
 
 - canonical managed, offline USB, web/API, minimal, serial-test, and original ESP32 CI builds;
 - ESP32-S2, ESP32-S3, and Heltec LoRa v3 compatibility builds;
-- production `-Wall -Werror` compilation, with the canonical artifact using 12.8% RAM and 69.3% application flash;
-- embedded unit-test firmware compilation;
+- production `-Wall -Werror` compilation, with the canonical artifact using 12.8% RAM and 69.6% application flash;
+- embedded unit-test firmware compilation, including strict announce-cache bounds and centralized runtime-config validation;
 - Cppcheck warning/performance/portability analysis;
 - six host provisioning/release tests, including real Ed25519 signing and package verification;
+- Reticulum reference-library wire compatibility tests;
 - Python, shell, JSON, YAML, and Git whitespace validation.
 
 No compatible serial device was present for this source review, so embedded tests and the HIL workflow were not executed on hardware. This snapshot is evidence for entering hardware acceptance, not permission to skip any gate below.
@@ -122,7 +123,7 @@ The generated config contains a strong per-device API token and is recorded in t
 2. Upload the per-device filesystem config before joining the field network. Production builds do not allow unauthenticated network bootstrap.
 3. Restart the unit if the provisioning response returns `X-Restart-Required: true`.
 4. Query `/api/v1/status`.
-5. Confirm `config_present=true`, `bootstrap_mode=false`, expected `device_id`, expected `node_name`, and valid interface health.
+5. Confirm `config_present=true`, `config_valid=true`, `bootstrap_mode=false`, expected `device_id`, expected `node_name`, and valid interface health.
 
 ### 3.4 Acceptance Test
 

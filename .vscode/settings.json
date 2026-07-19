@@ -23,6 +23,16 @@
         "**/cmake-build-*/**": true,
         "**/tmp_capture/**": true
     },
+    "C_Cpp.files.exclude": {
+        "**/.git": true,
+        "**/.pio": true,
+        "**/.platformio/packages": true,
+        "**/.venv": true,
+        "**/build": true,
+        "**/build-*": true,
+        "**/cmake-build-*": true,
+        "**/tmp_capture": true
+    },
     "C_Cpp.default.browse.path": [
         "${workspaceFolder}/include",
         "${workspaceFolder}/src",

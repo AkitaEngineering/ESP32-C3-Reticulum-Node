@@ -44,6 +44,10 @@ paths:
                     type: integer
                   config_present:
                     type: boolean
+                  config_valid:
+                    type: boolean
+                  config_error:
+                    type: string
                   bootstrap_mode:
                     type: boolean
                   wifi_connected:

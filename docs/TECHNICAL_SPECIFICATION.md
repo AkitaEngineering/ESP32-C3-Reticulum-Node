@@ -45,6 +45,7 @@ The firmware supports normal and transport headers and rejects IFAC packets. Rou
 - Identity public key: X25519 public key (32 bytes) plus Ed25519 public key (32 bytes).
 - Identity hash: first 16 bytes of SHA-256 over the 64-byte public key.
 - Announce validation: destination hash, name hash, and Ed25519 signature are checked before learning or forwarding.
+- Announce random hashes use Unix time after SNTP synchronization and an uptime fallback while offline or unsynchronized.
 - SINGLE encryption: ephemeral X25519, HKDF-SHA256, then authenticated Fernet-style AES-256-CBC/HMAC-SHA256.
 - Link establishment: ephemeral X25519 with an Ed25519-authenticated responder proof; active links bind to the handshake interface and enforce negotiated MTU.
 - OTA: Ed25519 signature over `SHA-512("RNS-OTA-V1\0" || version || "\0" || firmware)`.
@@ -62,6 +63,8 @@ The production unit reads `/config.json` from SPIFFS before network initializati
 - a non-zero 32-byte Ed25519 OTA public key in hexadecimal.
 
 Use `tools/make_device_config.py`; generated configs and manifests contain secrets and must remain outside Git. The OTA `public_key_id` is the first 16 hexadecimal characters of SHA-256 over the raw 32-byte Ed25519 public key.
+
+The same validator is used when loading a preprovisioned file and accepting an API update. Production startup and pending-OTA health checks reject a missing or invalid file; `/api/v1/status` reports `config_valid` and an explanatory `config_error` when applicable.
 
 ## Management API
 

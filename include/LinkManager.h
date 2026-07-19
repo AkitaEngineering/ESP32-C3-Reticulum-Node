@@ -69,7 +69,7 @@ public:
     // --- Methods for RNSLink instances ---
     const uint8_t* getNodeAddress() const;
     uint16_t getNextPacketId();
-    void sendPacketRaw(const uint8_t* buffer, size_t len, const uint8_t* destination,
+    bool sendPacketRaw(const uint8_t* buffer, size_t len, const uint8_t* destination,
                        InterfaceType interface = InterfaceType::UNKNOWN);
     void processReceivedLinkData(const uint8_t* link_id, const std::vector<uint8_t>& data);
     RNSCrypto& getIdentity();

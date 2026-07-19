@@ -89,6 +89,7 @@ public:
     bool shouldForwardAnnounce(const uint8_t packet_hash[32]);
     void markAnnounceForwarded(const uint8_t packet_hash[32]);
     void pruneRecentAnnounces(bool force = false);
+    size_t getRecentAnnounceCount() const { return _recentAnnounces.size(); }
 
 
 private:

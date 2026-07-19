@@ -164,7 +164,11 @@ bool RNSLink::establish() {
         RNSIdentity::truncated_hash(hashable, hashable_len, _link_id);
     }
 
-    _ownerRef.sendPacketRaw(buffer, len, _dest_hash, _attachedInterface);
+    if (!_ownerRef.sendPacketRaw(buffer, len, _dest_hash, _attachedInterface)) {
+        DebugSerial.println("! RNSLink::establish: transport rejected packet");
+        _state = RNSLinkState::CLOSED;
+        return false;
+    }
     _requestTime = millis();
     updateActivity();
 
@@ -272,7 +276,10 @@ bool RNSLink::prove() {
         return false;
     }
 
-    _ownerRef.sendPacketRaw(buffer, len, _link_id, _attachedInterface);
+    if (!_ownerRef.sendPacketRaw(buffer, len, _link_id, _attachedInterface)) {
+        DebugSerial.println("! RNSLink::prove: transport rejected packet");
+        return false;
+    }
     updateActivity();
     DebugSerial.println("[Link] LRPROOF sent");
     return true;
@@ -377,7 +384,10 @@ bool RNSLink::validateProof(const uint8_t* proof_data, size_t proof_len,
         return false;
     }
 
-    _ownerRef.sendPacketRaw(buffer, len, _link_id, _attachedInterface);
+    if (!_ownerRef.sendPacketRaw(buffer, len, _link_id, _attachedInterface)) {
+        close(false);
+        return false;
+    }
 
     return true;
 }
@@ -487,7 +497,10 @@ bool RNSLink::sendData(const uint8_t* data, size_t len) {
         return false;
     }
 
-    _ownerRef.sendPacketRaw(buffer, pkt_len, _link_id, _attachedInterface);
+    if (!_ownerRef.sendPacketRaw(buffer, pkt_len, _link_id, _attachedInterface)) {
+        DebugSerial.println("! RNSLink::sendData: transport rejected packet");
+        return false;
+    }
     updateActivity();
     return true;
 }

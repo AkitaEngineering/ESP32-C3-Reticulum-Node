@@ -66,11 +66,11 @@ public:
 
     // Sending methods
     // Sends packet out relevant interfaces based on routing (or broadcast), excluding source interface
-    void sendPacket(const uint8_t *packetBuffer, size_t packetLen, const uint8_t *destinationAddr, InterfaceType excludeInterface = InterfaceType::UNKNOWN);
+    bool sendPacket(const uint8_t *packetBuffer, size_t packetLen, const uint8_t *destinationAddr, InterfaceType excludeInterface = InterfaceType::UNKNOWN);
     // Sends packet via a specific interface type (used internally or for specific needs)
-    void sendPacketVia(InterfaceType ifType, const uint8_t *packetBuffer, size_t packetLen, const uint8_t *destinationAddr);
+    bool sendPacketVia(InterfaceType ifType, const uint8_t *packetBuffer, size_t packetLen, const uint8_t *destinationAddr);
     // Broadcasts an announce packet on relevant interfaces
-    void broadcastAnnounce(const uint8_t *packetBuffer, size_t packetLen,
+    bool broadcastAnnounce(const uint8_t *packetBuffer, size_t packetLen,
                            InterfaceType excludeInterface = InterfaceType::UNKNOWN);
 #if METRICS_ENABLED && METRICS_UDP_ENABLED
     // send periodic JSON metrics via UDP broadcast
@@ -223,17 +223,17 @@ private:
 
     // Specific Send implementations called by public send methods
     bool sendPacketViaEspNow(const uint8_t *packetBuffer, size_t packetLen, const uint8_t *destinationAddr);
-    void sendPacketViaWiFi(const uint8_t *packetBuffer, size_t packetLen, const uint8_t *destinationAddr);
-    void sendPacketViaSerial(const uint8_t *packetBuffer, size_t packetLen);
-    void sendPacketViaBluetooth(const uint8_t *packetBuffer, size_t packetLen);
+    bool sendPacketViaWiFi(const uint8_t *packetBuffer, size_t packetLen, const uint8_t *destinationAddr);
+    bool sendPacketViaSerial(const uint8_t *packetBuffer, size_t packetLen);
+    bool sendPacketViaBluetooth(const uint8_t *packetBuffer, size_t packetLen);
 #ifdef LORA_ENABLED
-    void sendPacketViaLoRa(const uint8_t *packetBuffer, size_t packetLen, const uint8_t *destinationAddr);
+    bool sendPacketViaLoRa(const uint8_t *packetBuffer, size_t packetLen, const uint8_t *destinationAddr);
 #endif
 #ifdef HAM_MODEM_ENABLED
-    void sendPacketViaHAMModem(const uint8_t *packetBuffer, size_t packetLen);
+    bool sendPacketViaHAMModem(const uint8_t *packetBuffer, size_t packetLen);
 #endif
 #ifdef IPFS_ENABLED
-    void sendPacketViaIPFS(const uint8_t *packetBuffer, size_t packetLen, const uint8_t *destinationAddr);
+    bool sendPacketViaIPFS(const uint8_t *packetBuffer, size_t packetLen, const uint8_t *destinationAddr);
 #endif
 
     PacketReceiverCallback _packetReceiver; // Callback to ReticulumNode::handleReceivedPacket
