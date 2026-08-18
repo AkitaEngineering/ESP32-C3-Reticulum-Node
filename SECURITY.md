@@ -5,7 +5,7 @@ If you discover a security issue, please follow responsible disclosure:
 - Include steps to reproduce, affected versions, and suggested mitigations.
 
 Security recommendations for deployers:
-- Never expose the device HTTP API directly to the Internet. Put it on an encrypted, access-controlled management network or behind a TLS VPN/gateway.
+- Never expose the device HTTP API directly to the Internet or an untrusted LAN. Production deployment must place it on an encrypted, access-controlled management network or behind a TLS VPN/gateway. The firmware does not terminate TLS.
 - Production manufacturing must use a security-enabled bootloader/firmware build and verify Secure Boot and Flash Encryption eFuse state before shipment. The current pinned Arduino SDK build does not enable either feature, so its artifact is limited to controlled pilots until that build-system migration is complete.
 - Verify OTA images with signatures before installing (Ed25519 verification is now supported).
 

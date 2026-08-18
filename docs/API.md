@@ -7,7 +7,8 @@ All endpoints are served on HTTP (port defined by `WEBSERVER_PORT`) and use simp
 Authentication
 - The API uses an opaque Bearer token when `WEBSERVER_AUTH_ENABLED=1`. The scheme must be exactly `Authorization: Bearer <token>`; a raw token is rejected.
 - Development builds may allow selected first-boot endpoints without authentication. `PRODUCTION_BUILD=1` disables this path.
-- If `/config.json` exists with an empty token or the placeholder token `CHANGE_ME_generate_a_strong_token`, authenticated endpoints fail closed. Replace the placeholder with a strong per-device token before enabling the API in the field.
+- If `/config.json` exists with an empty token or the placeholder token `CHANGE_ME_generate_a_strong_token`, write endpoints fail closed. `GET /api/v1/status` remains available as a read-only diagnostic so `config_error` / `fail_closed` can be observed. Replace the placeholder with a strong per-device token before enabling writes.
+- The API is plaintext HTTP. Production deployments must terminate TLS on a VPN or management gateway; never expose port 80 to an untrusted network.
 - Header: `Authorization: Bearer <token>`
 - Duplicate `Authorization`, `X-Signature-Ed25519`, `X-Firmware-Version`, or `Content-Length` headers are rejected. Folded headers and `Transfer-Encoding` are not supported.
 
@@ -27,8 +28,8 @@ Common response codes
 Endpoints
 
 - `GET /api/v1/status`
-  - Returns JSON with node status metrics, provisioning state, and per-interface health snapshots (uptime, free heap, link counts, route count, stable device ID, config presence/validity, bootstrap mode, WiFi state, restart-required state, interface support/usability, packet counters, and last RX/TX uptime timestamps). `config_error` is present when validation fails.
-  - Auth: always required in production.
+  - Returns JSON with node status metrics, provisioning state, and per-interface health snapshots (uptime, free heap, link counts, route count, stable device ID, config presence/validity, identity readiness, fail-closed state, mesh enablement, bootstrap mode, WiFi state, restart-required state, interface support/usability, packet counters, and last RX/TX uptime timestamps). `config_error` is present when validation fails. `api_transport` is `http`; `management_requires_tls_proxy` is always true.
+  - Auth: required when a valid token exists. If the saved config is invalid or the token is a placeholder, this endpoint is allowed as a read-only diagnostic.
 
 - `GET /api/v1/routes`
   - Returns grouped route diagnostics by destination, including all candidate paths, the currently selected path, and the effective interface-priority policy used for tie-breaks.
@@ -52,7 +53,7 @@ Endpoints
   - Writes are validated and committed through a verified temporary file; the response never echoes secrets.
 
 - `POST /api/v1/config/save`
-  - Saves the currently staged runtime config; returns `saved` or `no config to save`.
+  - Confirms the committed `/config.json` still validates. Returns `{"saved":true,"already_committed":true}` or an error if the file is missing/invalid. There is no separate staging document; `POST /api/v1/config` is the write path.
   - Auth: required.
 
 - `POST /api/v1/restart`
@@ -89,11 +90,11 @@ curl -X POST -H "Content-Type: application/json" -H "Authorization: Bearer ${TOK
 
 ```bash
 # Build and version-bind the signed firmware digest
-./tools/sign_firmware.sh 0.3.1 firmware.bin keys/ota-ed25519.pem signature.hex
+./tools/sign_firmware.sh 0.3.2 firmware.bin keys/ota-ed25519.pem signature.hex
 
 curl -X POST \
   -H "Authorization: Bearer ${TOKEN}" \
-  -H "X-Firmware-Version: 0.3.1" \
+  -H "X-Firmware-Version: 0.3.2" \
   -H "X-Signature-Ed25519: $(cat signature.hex)" \
   --data-binary @firmware.bin \
   http://<device-ip>:<port>/api/v1/ota
@@ -260,7 +261,7 @@ API request/response schemas
 }
 ```
 
-- `POST /api/v1/config` request: any valid JSON object matching your runtime config. Response is the saved JSON document on success.
+- `POST /api/v1/config` request: any valid JSON object matching your runtime config. Empty `wifi.password` or `api.token` fields keep the previously stored secrets. Response is `{"saved":true,"restart_required":...}` and never echoes secrets.
 - `POST /api/v1/config` also returns `X-Restart-Required` and, when applicable, `X-Restart-Reason` so provisioning tools can prompt for a controlled restart instead of assuming every saved change applied live.
 
 - `POST /api/v1/ota` request: binary body with required `X-Firmware-Version` and `X-Signature-Ed25519` headers. The signature is Ed25519 over `SHA-512("RNS-OTA-V1\\0" || version || "\\0" || firmware.bin)`. Responses: `200` (ok), `400` (bad upload/version), `403` (invalid signature), or `409` (same/older version).
@@ -277,7 +278,7 @@ Examples
 - OTA upload
 
 ```bash
-./tools/ota_upload.sh 192.168.4.1 80 "$TOKEN" 0.3.1 firmware.bin signature.hex
+./tools/ota_upload.sh 192.168.4.1 80 "$TOKEN" 0.3.2 firmware.bin signature.hex
 ```
 
 

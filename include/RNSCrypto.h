@@ -22,22 +22,28 @@
 #include <ctime>
 #include <vector>
 #include <EEPROM.h>
+#include <esp_mac.h>
 #include <monocypher.h>
 #include <optional/monocypher-ed25519.h>
 #include "RNSIdentity.h"
 #include "RNSFernet.h"
 #include "Config.h"
+#include "Utils.h"
 
 // EEPROM layout for identity keys (placed after existing node config)
 // Existing: [NODE_ADDR 8] [PKT_ID 2] = 10 bytes (EEPROM offsets 0..9)
-// New:      [MAGIC 4] [X25519_PRIV 32] [ED25519_SEED 32] = 68 bytes (offsets 16..83)
+// V1:       [MAGIC 4] [X25519_PRIV 32] [ED25519_SEED 32]                    (16..83)
+// V2:       [MAGIC 4] [X25519_PRIV 32] [ED25519_SEED 32] [MAC 6] [CRC32 4] (16..93)
 static constexpr int EEPROM_ADDR_IDENTITY_MAGIC = 16;
 static constexpr int EEPROM_ADDR_X25519_PRIV    = 20;   // 32 bytes
 static constexpr int EEPROM_ADDR_ED25519_SEED   = 52;   // 32 bytes
-static constexpr int EEPROM_IDENTITY_END         = 84;
+static constexpr int EEPROM_ADDR_IDENTITY_MAC   = 84;   // 6 bytes
+static constexpr int EEPROM_ADDR_IDENTITY_CRC   = 90;   // 4 bytes
+static constexpr int EEPROM_IDENTITY_END         = 94;
 
-// Magic value to detect initialized identity: "RNSI" in ASCII
+// Magic values: "RNSI" (v1, no CRC) and "RNS2" (v2, MAC-bound + CRC)
 static constexpr uint32_t IDENTITY_MAGIC = 0x524E5349;
+static constexpr uint32_t IDENTITY_MAGIC_V2 = 0x524E5332;
 
 // Updated EEPROM size to accommodate identity keys
 static constexpr int EEPROM_SIZE_WITH_IDENTITY = 128;
@@ -60,13 +66,14 @@ public:
             return true;
         }
 
-        // No valid identity found — generate fresh keys
+        // No valid identity found — generate fresh keys bound to this chip.
         generateIdentity();
         derivePublicKeys();
         computeHashes();
-        if (!saveIdentity()) {
+        if (!saveIdentity() || !verifyStoredIdentity()) {
             crypto_wipe(_x25519_private, sizeof(_x25519_private));
             crypto_wipe(_ed25519_seed, sizeof(_ed25519_seed));
+            crypto_wipe(_ed25519_secret, sizeof(_ed25519_secret));
             return false;
         }
         _ready = true;
@@ -379,21 +386,45 @@ private:
     uint8_t _identity_hash[16] = {0};
 
     static bool isAllZero(const uint8_t* value, size_t len) {
-        uint8_t combined = 0;
-        for (size_t i = 0; i < len; ++i) combined |= value[i];
-        return combined == 0;
+        return Utils::isAllZeros(value, len);
+    }
+
+    static bool isWeakKey(const uint8_t* value, size_t len) {
+        return Utils::isAllZeros(value, len) || Utils::isAllBytes(value, len, 0xFF);
+    }
+
+    static bool readChipMac(uint8_t out[6]) {
+        if (!out) return false;
+        memset(out, 0, 6);
+        return esp_efuse_mac_get_default(out) == ESP_OK && !isWeakKey(out, 6);
+    }
+
+    uint32_t identityPayloadCrc(uint32_t magic, const uint8_t mac[6]) const {
+        uint8_t payload[4 + 32 + 32 + 6] = {0};
+        payload[0] = static_cast<uint8_t>(magic);
+        payload[1] = static_cast<uint8_t>(magic >> 8);
+        payload[2] = static_cast<uint8_t>(magic >> 16);
+        payload[3] = static_cast<uint8_t>(magic >> 24);
+        memcpy(payload + 4, _x25519_private, 32);
+        memcpy(payload + 36, _ed25519_seed, 32);
+        memcpy(payload + 68, mac, 6);
+        return Utils::crc32(payload, sizeof(payload));
     }
 
     void generateIdentity() {
         // Generate 32 bytes of random data for each key using hardware TRNG
-        for (int i = 0; i < 32; i += 4) {
-            uint32_t r = esp_random();
-            memcpy(_x25519_private + i, &r, sizeof(r));
-        }
-        for (int i = 0; i < 32; i += 4) {
-            uint32_t r = esp_random();
-            memcpy(_ed25519_seed + i, &r, sizeof(r));
-        }
+        do {
+            for (int i = 0; i < 32; i += 4) {
+                uint32_t r = esp_random();
+                memcpy(_x25519_private + i, &r, sizeof(r));
+            }
+        } while (isWeakKey(_x25519_private, sizeof(_x25519_private)));
+        do {
+            for (int i = 0; i < 32; i += 4) {
+                uint32_t r = esp_random();
+                memcpy(_ed25519_seed + i, &r, sizeof(r));
+            }
+        } while (isWeakKey(_ed25519_seed, sizeof(_ed25519_seed)));
     }
 
     void derivePublicKeys() {
@@ -415,46 +446,91 @@ private:
     }
 
     bool loadIdentity() {
-        // Check magic bytes
         uint32_t magic = 0;
         for (int i = 0; i < 4; i++) {
             magic |= ((uint32_t)EEPROM.read(EEPROM_ADDR_IDENTITY_MAGIC + i)) << (i * 8);
         }
 
-        if (magic != IDENTITY_MAGIC) {
+        for (int i = 0; i < 32; i++) {
+            _x25519_private[i] = EEPROM.read(EEPROM_ADDR_X25519_PRIV + i);
+            _ed25519_seed[i] = EEPROM.read(EEPROM_ADDR_ED25519_SEED + i);
+        }
+        if (isWeakKey(_x25519_private, sizeof(_x25519_private)) ||
+            isWeakKey(_ed25519_seed, sizeof(_ed25519_seed))) {
             return false;
         }
 
-        // Load X25519 private key
-        for (int i = 0; i < 32; i++) {
-            _x25519_private[i] = EEPROM.read(EEPROM_ADDR_X25519_PRIV + i);
+        uint8_t chipMac[6] = {0};
+        if (!readChipMac(chipMac)) return false;
+
+        if (magic == IDENTITY_MAGIC_V2) {
+            uint8_t storedMac[6] = {0};
+            for (int i = 0; i < 6; i++) storedMac[i] = EEPROM.read(EEPROM_ADDR_IDENTITY_MAC + i);
+            uint32_t storedCrc = 0;
+            for (int i = 0; i < 4; i++) {
+                storedCrc |= ((uint32_t)EEPROM.read(EEPROM_ADDR_IDENTITY_CRC + i)) << (i * 8);
+            }
+            if (memcmp(storedMac, chipMac, 6) != 0) return false;
+            if (storedCrc != identityPayloadCrc(IDENTITY_MAGIC_V2, storedMac)) return false;
+            return true;
         }
 
-        // Load Ed25519 seed
-        for (int i = 0; i < 32; i++) {
-            _ed25519_seed[i] = EEPROM.read(EEPROM_ADDR_ED25519_SEED + i);
+        if (magic == IDENTITY_MAGIC) {
+            // Migrate a valid v1 blob onto this chip with CRC + MAC binding.
+            return saveIdentity();
         }
-        return !isAllZero(_x25519_private, sizeof(_x25519_private)) &&
-               !isAllZero(_ed25519_seed, sizeof(_ed25519_seed));
+
+        return false;
     }
 
     bool saveIdentity() {
-        // Write magic
-        for (int i = 0; i < 4; i++) {
-            EEPROM.write(EEPROM_ADDR_IDENTITY_MAGIC + i, (IDENTITY_MAGIC >> (i * 8)) & 0xFF);
+        uint8_t chipMac[6] = {0};
+        if (!readChipMac(chipMac)) return false;
+        if (isWeakKey(_x25519_private, sizeof(_x25519_private)) ||
+            isWeakKey(_ed25519_seed, sizeof(_ed25519_seed))) {
+            return false;
         }
 
-        // Write X25519 private key
+        const uint32_t crc = identityPayloadCrc(IDENTITY_MAGIC_V2, chipMac);
+        for (int i = 0; i < 4; i++) {
+            EEPROM.write(EEPROM_ADDR_IDENTITY_MAGIC + i, (IDENTITY_MAGIC_V2 >> (i * 8)) & 0xFF);
+        }
         for (int i = 0; i < 32; i++) {
             EEPROM.write(EEPROM_ADDR_X25519_PRIV + i, _x25519_private[i]);
-        }
-
-        // Write Ed25519 seed
-        for (int i = 0; i < 32; i++) {
             EEPROM.write(EEPROM_ADDR_ED25519_SEED + i, _ed25519_seed[i]);
         }
+        for (int i = 0; i < 6; i++) {
+            EEPROM.write(EEPROM_ADDR_IDENTITY_MAC + i, chipMac[i]);
+        }
+        for (int i = 0; i < 4; i++) {
+            EEPROM.write(EEPROM_ADDR_IDENTITY_CRC + i, (crc >> (i * 8)) & 0xFF);
+        }
+        return EEPROM.commit() && verifyStoredIdentity();
+    }
 
-        return EEPROM.commit();
+    bool verifyStoredIdentity() const {
+        uint32_t magic = 0;
+        uint8_t storedPriv[32] = {0};
+        uint8_t storedSeed[32] = {0};
+        uint8_t storedMac[6] = {0};
+        uint8_t chipMac[6] = {0};
+        uint32_t storedCrc = 0;
+        for (int i = 0; i < 4; i++) {
+            magic |= ((uint32_t)EEPROM.read(EEPROM_ADDR_IDENTITY_MAGIC + i)) << (i * 8);
+        }
+        for (int i = 0; i < 32; i++) {
+            storedPriv[i] = EEPROM.read(EEPROM_ADDR_X25519_PRIV + i);
+            storedSeed[i] = EEPROM.read(EEPROM_ADDR_ED25519_SEED + i);
+        }
+        for (int i = 0; i < 6; i++) storedMac[i] = EEPROM.read(EEPROM_ADDR_IDENTITY_MAC + i);
+        for (int i = 0; i < 4; i++) {
+            storedCrc |= ((uint32_t)EEPROM.read(EEPROM_ADDR_IDENTITY_CRC + i)) << (i * 8);
+        }
+        if (magic != IDENTITY_MAGIC_V2) return false;
+        if (memcmp(storedPriv, _x25519_private, 32) != 0) return false;
+        if (memcmp(storedSeed, _ed25519_seed, 32) != 0) return false;
+        if (!readChipMac(chipMac) || memcmp(storedMac, chipMac, 6) != 0) return false;
+        return storedCrc == identityPayloadCrc(IDENTITY_MAGIC_V2, storedMac);
     }
 };
 

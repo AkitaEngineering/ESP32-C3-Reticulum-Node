@@ -94,7 +94,10 @@ void setup()
   reticulumNode.setAppDataHandler(myAppDataReceiver);
 
   // Steady LED means application boot completed successfully.
-  setStatusLed(true);
+  // Fail-closed mode blinks from the main loop instead.
+  if (!reticulumNode.isFailClosed() && !reticulumNode.isManagementLocked()) {
+    setStatusLed(true);
+  }
 
   DebugSerial.println("-----------------------------------");
   DebugSerial.println(" Setup Complete. Entering main loop.");

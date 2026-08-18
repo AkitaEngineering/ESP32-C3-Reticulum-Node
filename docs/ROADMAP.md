@@ -14,9 +14,9 @@ Status (2026-02-20): roadmap updated; v2.1 features largely implemented.
   - [x] Runtime JSON config (SPIFFS/LittleFS)
   - [x] /metrics endpoint + log levels
 - v2.2 — Field features
-  - [ ] Secure OTA with signature verification
-  - [ ] BLE provisioning (GATT) for WiFi/callsign
-  - [ ] IPFS: pinning & IPNS support
+  - [x] Secure OTA with signature verification
+  - [ ] BLE provisioning (GATT) for WiFi/callsign — not implemented; flag is reserved
+  - [ ] IPFS: pinning & IPNS support — development adapter only
 - v2.3 — Advanced routing & security
   - [ ] Adaptive routing metrics (ETX/RSSI)
   - [ ] Encrypted group messaging & key management

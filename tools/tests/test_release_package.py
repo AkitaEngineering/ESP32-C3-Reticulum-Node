@@ -9,7 +9,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT = ROOT / "tools" / "package_release.py"
-VERSION = "0.3.1"
+VERSION = "0.3.2"
 OTA_DOMAIN = b"RNS-OTA-V1\0"
 ED25519_SPKI_PREFIX = bytes.fromhex("302a300506032b6570032100")
 

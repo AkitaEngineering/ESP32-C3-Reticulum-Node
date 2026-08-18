@@ -36,6 +36,7 @@
 #endif
 
 #include "KISS.h"
+#include "EspNowFraming.h"
 
 // Forward declarations
 class RoutingTable;
@@ -63,6 +64,9 @@ public:
 
     void setup();
     void loop(); // Process inputs from interfaces
+    void setMeshEnabled(bool enabled) { _meshEnabled = enabled; }
+    bool isMeshEnabled() const { return _meshEnabled; }
+    void dropStoreForwardQueue();
 
     // Sending methods
     // Sends packet out relevant interfaces based on routing (or broadcast), excluding source interface
@@ -157,29 +161,17 @@ private:
         size_t receivedCount = 0;
     };
 
-    struct EspNowQueuedPacket {
-        std::vector<uint8_t> payload;
-        std::array<uint8_t, 16> destination = {0};
-        bool hasDestination = false;
-        uint8_t attempts = 0;
-        unsigned long nextTryMs = 0;
-    };
-
     struct EspNowRxFrame {
         uint8_t senderMac[6] = {0};
         uint16_t length = 0;
         uint8_t payload[250] = {0};
     };
 
-    static constexpr uint8_t ESPNOW_FRAG_MAGIC0 = 0x52; // 'R'
-    static constexpr uint8_t ESPNOW_FRAG_MAGIC1 = 0x4E; // 'N'
-    static constexpr uint8_t ESPNOW_FRAG_VERSION = 1;
-    static constexpr size_t ESPNOW_FRAG_HEADER_LEN = 12;
-    static constexpr size_t ESPNOW_MAX_PAYLOAD_LEN = 250;
-    static constexpr size_t ESPNOW_FRAG_CHUNK_DATA_LEN = ESPNOW_MAX_PAYLOAD_LEN - ESPNOW_FRAG_HEADER_LEN;
-    static constexpr uint8_t ESPNOW_MAX_FRAGMENT_CHUNKS =
-        static_cast<uint8_t>((RNS_MTU + ESPNOW_FRAG_CHUNK_DATA_LEN - 1) / ESPNOW_FRAG_CHUNK_DATA_LEN);
-    static constexpr size_t ESPNOW_MAX_RX_ASSEMBLIES = 6;
+    static constexpr size_t ESPNOW_FRAG_HEADER_LEN = EspNowFraming::HEADER_LEN;
+    static constexpr size_t ESPNOW_MAX_PAYLOAD_LEN = EspNowFraming::MAX_PAYLOAD_LEN;
+    static constexpr size_t ESPNOW_FRAG_CHUNK_DATA_LEN = EspNowFraming::CHUNK_DATA_LEN;
+    static constexpr uint8_t ESPNOW_MAX_FRAGMENT_CHUNKS = EspNowFraming::MAX_FRAGMENT_CHUNKS;
+    static constexpr size_t ESPNOW_MAX_RX_ASSEMBLIES = 12;
     static constexpr unsigned long ESPNOW_REASSEMBLY_TIMEOUT_MS = 1500;
 
     void setupWiFi();
@@ -240,12 +232,13 @@ private:
     RoutingTable& _routingTableRef; // Reference for route lookups / peer management
 
     bool _espNowInitialized;
+    bool _meshEnabled = true;
 
     // Keep a mirror of ESP-NOW peers added so we can display/remove them
     std::vector<std::array<uint8_t,6>> _espNowPeers;
+    EspNowFraming::StoreQueue _espNowStoreQueue;
     std::array<InterfaceCounters, INTERFACE_STATS_COUNT> _interfaceStats = {};
     std::vector<EspNowRxAssembly> _espNowRxAssemblies;
-    std::deque<EspNowQueuedPacket> _espNowStoreQueue;
     QueueHandle_t _espNowRxQueue = nullptr;
     static constexpr size_t ESPNOW_RX_QUEUE_LENGTH = 12;
     uint16_t _espNowTxMessageId = 0;

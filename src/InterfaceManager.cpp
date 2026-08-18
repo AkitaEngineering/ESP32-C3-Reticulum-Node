@@ -31,15 +31,7 @@
 static const uint8_t espnow_broadcast_mac[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 static uint32_t espnow_crc32(const uint8_t *data, size_t len) {
-    uint32_t crc = 0xFFFFFFFFu;
-    for (size_t i = 0; i < len; ++i) {
-        crc ^= static_cast<uint32_t>(data[i]);
-        for (int b = 0; b < 8; ++b) {
-            uint32_t mask = static_cast<uint32_t>(-(static_cast<int32_t>(crc & 1u)));
-            crc = (crc >> 1) ^ (0xEDB88320u & mask);
-        }
-    }
-    return ~crc;
+    return EspNowFraming::crc32(data, len);
 }
 
 // Define static instance pointer
@@ -165,6 +157,12 @@ InterfaceHealthSnapshot InterfaceManager::getInterfaceHealthSnapshot(InterfaceTy
 void InterfaceManager::setup() {
     setupSerial(); // Assumes Serial.begin() already called
 
+    if (!_meshEnabled) {
+        LOG_WARN("IF: mesh disabled (fail-closed). USB KISS only.");
+        DebugSerial.println("Interface Manager Setup Complete (USB-only).");
+        return;
+    }
+
     // Initialize Bluetooth first (if available)
 #if BLUETOOTH_CLASSIC_AVAILABLE
     setupBluetooth();
@@ -197,12 +195,15 @@ void InterfaceManager::loop() {
     flushPendingUsbKissFrames();
 #endif
 
-    // Periodic ESP-NOW diagnostic over KISS (every 10 seconds)
+#if DEBUG_ENABLED
+    // Periodic ESP-NOW diagnostic over KISS (every 10 seconds). Production
+    // builds keep the TNC stream data-only.
     unsigned long now = millis();
     if (now - _lastDiagMs >= 10000) {
         _lastDiagMs = now;
         sendEspNowDiagKiss();
     }
+#endif
 
     // Process inputs from KISS interfaces
     processSerialInput();
@@ -539,7 +540,7 @@ bool InterfaceManager::sendPacketViaEspNow(const uint8_t *packetBuffer, size_t p
 }
 
 bool InterfaceManager::sendPacketViaEspNowInternal(const uint8_t *packetBuffer, size_t packetLen, const uint8_t *destinationAddr, bool enqueueOnFailure) {
-    if (!packetBuffer || packetLen == 0) return false;
+    if (!_meshEnabled || !_espNowInitialized || !packetBuffer || packetLen == 0) return false;
 
     const uint8_t* targetMac = espnow_broadcast_mac; // Default to broadcast
 
@@ -602,21 +603,12 @@ bool InterfaceManager::sendPacketViaEspNowInternal(const uint8_t *packetBuffer, 
         const size_t chunkLen = remaining > maxChunk ? maxChunk : remaining;
 
         uint8_t frame[ESPNOW_MAX_PAYLOAD_LEN];
-        frame[0] = ESPNOW_FRAG_MAGIC0;
-        frame[1] = ESPNOW_FRAG_MAGIC1;
-        frame[2] = ESPNOW_FRAG_VERSION;
-        frame[3] = ESPNOW_FRAGMENT_CRC32_ENABLED ? 0x01 : 0x00;
-        frame[4] = static_cast<uint8_t>((messageId >> 8) & 0xFF);
-        frame[5] = static_cast<uint8_t>(messageId & 0xFF);
-        frame[6] = chunkIndex;
-        frame[7] = totalChunks;
-        frame[8] = static_cast<uint8_t>((fullCrc >> 24) & 0xFF);
-        frame[9] = static_cast<uint8_t>((fullCrc >> 16) & 0xFF);
-        frame[10] = static_cast<uint8_t>((fullCrc >> 8) & 0xFF);
-        frame[11] = static_cast<uint8_t>(fullCrc & 0xFF);
-        memcpy(frame + ESPNOW_FRAG_HEADER_LEN, packetBuffer + offset, chunkLen);
+        const size_t frameLen = EspNowFraming::packFragment(
+            frame, sizeof(frame), messageId, chunkIndex, totalChunks, fullCrc,
+            ESPNOW_FRAGMENT_CRC32_ENABLED, packetBuffer + offset, chunkLen);
+        if (frameLen == 0) return false;
 
-        esp_err_t result = esp_now_send(targetMac, frame, ESPNOW_FRAG_HEADER_LEN + chunkLen);
+        esp_err_t result = esp_now_send(targetMac, frame, frameLen);
         if (result != ESP_OK) {
             DebugSerial.print("! ESP-NOW fragment send failed (msg=");
             DebugSerial.print(messageId);
@@ -686,21 +678,18 @@ bool InterfaceManager::enqueueEspNowPacket(const uint8_t *packetBuffer, size_t p
         return false;
     }
 
-    if (_espNowStoreQueue.size() >= ESPNOW_SF_QUEUE_SIZE) {
+    const bool enqueued = _espNowStoreQueue.enqueue(
+        packetBuffer, packetLen, destinationAddr, millis(), ESPNOW_SF_RETRY_MS);
+    if (enqueued && _espNowStoreQueue.droppedOldest()) {
         DebugSerial.println("! WARN: ESP-NOW store-forward queue full, dropping oldest packet");
-        _espNowStoreQueue.pop_front();
     }
+    return enqueued;
+#endif
+}
 
-    EspNowQueuedPacket queued;
-    queued.payload.assign(packetBuffer, packetBuffer + packetLen);
-    queued.hasDestination = (destinationAddr != nullptr);
-    if (queued.hasDestination) {
-        memcpy(queued.destination.data(), destinationAddr, queued.destination.size());
-    }
-    queued.attempts = 0;
-    queued.nextTryMs = millis() + ESPNOW_SF_RETRY_MS;
-    _espNowStoreQueue.push_back(std::move(queued));
-    return true;
+void InterfaceManager::dropStoreForwardQueue() {
+#if ESPNOW_STORE_FORWARD_ENABLED
+    _espNowStoreQueue.clear();
 #endif
 }
 
@@ -711,25 +700,25 @@ void InterfaceManager::processEspNowStoreForward() {
     }
 
     unsigned long now = millis();
-    EspNowQueuedPacket &queued = _espNowStoreQueue.front();
-    if ((long)(now - queued.nextTryMs) < 0) {
+    EspNowFraming::StoreItem *queued = _espNowStoreQueue.frontReady(now);
+    if (!queued) {
         return;
     }
 
-    const uint8_t *dest = queued.hasDestination ? queued.destination.data() : nullptr;
-    bool ok = sendPacketViaEspNowInternal(queued.payload.data(), queued.payload.size(), dest, false);
+    const uint8_t *dest = queued->hasDestination ? queued->destination.data() : nullptr;
+    bool ok = sendPacketViaEspNowInternal(queued->payload.data(), queued->payload.size(), dest, false);
     if (ok) {
-        _espNowStoreQueue.pop_front();
+        _espNowStoreQueue.popFront();
         return;
     }
 
-    queued.attempts++;
-    if (queued.attempts >= ESPNOW_SF_MAX_ATTEMPTS) {
+    queued->attempts++;
+    if (queued->attempts >= ESPNOW_SF_MAX_ATTEMPTS) {
         DebugSerial.println("! WARN: ESP-NOW store-forward max attempts reached, dropping packet");
-        _espNowStoreQueue.pop_front();
+        _espNowStoreQueue.popFront();
         return;
     }
-    queued.nextTryMs = now + ESPNOW_SF_RETRY_MS;
+    queued->nextTryMs = now + ESPNOW_SF_RETRY_MS;
 #endif
 }
 
@@ -867,6 +856,10 @@ bool InterfaceManager::sendPacketViaBluetooth(const uint8_t *packetBuffer, size_
 
 // --- ESP-NOW Peer Management ---
 void InterfaceManager::enableEspNow() {
+    if (!_meshEnabled) {
+        DebugSerial.println("IF: mesh disabled; refusing to enable ESP-NOW.");
+        return;
+    }
     if (_espNowInitialized) {
         DebugSerial.println("IF: ESP-NOW already enabled.");
         return;
@@ -901,6 +894,31 @@ bool InterfaceManager::addEspNowPeer(const uint8_t* mac_addr) {
             _espNowPeers.push_back(arr);
         }
         return true; // Already exists at driver level
+    }
+
+    const bool isBroadcast = memcmp(mac_addr, espnow_broadcast_mac, 6) == 0;
+#if ESP_NOW_INDISCRIMINATE_BROADCAST
+    if (!isBroadcast) {
+        // Fleet TX is always broadcast. Do not consume the ESP-NOW driver
+        // peer table (typically 20 slots including FF:FF:FF:FF:FF:FF).
+        std::array<uint8_t,6> arr;
+        memcpy(arr.data(), mac_addr, 6);
+        if (std::find(_espNowPeers.begin(), _espNowPeers.end(), arr) == _espNowPeers.end()) {
+            if (_espNowPeers.size() >= MAX_HEARD_NEIGHBORS) {
+                _espNowPeers.erase(_espNowPeers.begin());
+            }
+            _espNowPeers.push_back(arr);
+        }
+        return true;
+    }
+#endif
+    if (!isBroadcast && _espNowPeers.size() >= ESPNOW_MAX_PEERS) {
+        for (auto it = _espNowPeers.begin(); it != _espNowPeers.end(); ++it) {
+            if (memcmp(it->data(), espnow_broadcast_mac, 6) != 0) {
+                removeEspNowPeer(it->data());
+                break;
+            }
+        }
     }
 
     esp_now_peer_info_t peerInfo = {}; // Initialize all fields to 0/false/etc.
@@ -961,27 +979,8 @@ bool InterfaceManager::checkEspNowPeer(const uint8_t* mac_addr) {
 }
 
 bool InterfaceManager::parseEspNowFragment(const uint8_t *data, int len, uint16_t &messageId, uint8_t &chunkIndex, uint8_t &totalChunks, bool &hasCrc, uint32_t &expectedCrc, const uint8_t* &chunkData, size_t &chunkLen) const {
-    if (!data || len <= 0) return false;
-    if (len < static_cast<int>(ESPNOW_FRAG_HEADER_LEN)) return false;
-    if (data[0] != ESPNOW_FRAG_MAGIC0 || data[1] != ESPNOW_FRAG_MAGIC1 || data[2] != ESPNOW_FRAG_VERSION) return false;
-
-    if ((data[3] & 0xFE) != 0) return false;
-    hasCrc = (data[3] & 0x01) != 0;
-    messageId = (static_cast<uint16_t>(data[4]) << 8) | static_cast<uint16_t>(data[5]);
-    chunkIndex = data[6];
-    totalChunks = data[7];
-    if (totalChunks == 0 || totalChunks > ESPNOW_MAX_FRAGMENT_CHUNKS || chunkIndex >= totalChunks) return false;
-
-    expectedCrc = (static_cast<uint32_t>(data[8]) << 24)
-                | (static_cast<uint32_t>(data[9]) << 16)
-                | (static_cast<uint32_t>(data[10]) << 8)
-                | static_cast<uint32_t>(data[11]);
-
-    chunkData = data + ESPNOW_FRAG_HEADER_LEN;
-    chunkLen = static_cast<size_t>(len) - ESPNOW_FRAG_HEADER_LEN;
-    if (chunkLen == 0 || chunkLen > ESPNOW_FRAG_CHUNK_DATA_LEN) return false;
-    if (chunkIndex + 1 < totalChunks && chunkLen != ESPNOW_FRAG_CHUNK_DATA_LEN) return false;
-    return true;
+    return EspNowFraming::parseFragment(data, len, messageId, chunkIndex, totalChunks,
+                                        hasCrc, expectedCrc, chunkData, chunkLen);
 }
 
 InterfaceManager::EspNowRxAssembly* InterfaceManager::getEspNowAssemblySlot(const uint8_t *senderMac, uint16_t messageId, uint8_t totalChunks) {
@@ -1061,9 +1060,9 @@ void InterfaceManager::handleEspNowPayload(const uint8_t *senderMac, const uint8
     const uint8_t *chunkData = nullptr;
     size_t chunkLen = 0;
 
-    const bool looksFragmented = len >= 3 && incomingData[0] == ESPNOW_FRAG_MAGIC0 &&
-                                 incomingData[1] == ESPNOW_FRAG_MAGIC1 &&
-                                 incomingData[2] == ESPNOW_FRAG_VERSION;
+    const bool looksFragmented = len >= 3 && incomingData[0] == EspNowFraming::MAGIC0 &&
+                                 incomingData[1] == EspNowFraming::MAGIC1 &&
+                                 incomingData[2] == EspNowFraming::VERSION;
     if (!parseEspNowFragment(incomingData, len, messageId, chunkIndex, totalChunks, hasCrc, expectedCrc, chunkData, chunkLen)) {
         if (looksFragmented) {
             DebugSerial.println("! WARN: Malformed ESP-NOW fragment discarded.");
@@ -1173,7 +1172,11 @@ void InterfaceManager::cleanupExpiredEspNowAssemblies() {
 
 // --- Debug Helpers ---
 void InterfaceManager::printEspNowPeers() {
+#if ESP_NOW_INDISCRIMINATE_BROADCAST
+    DebugSerial.println("IF: Heard ESP-NOW neighbors (TX is broadcast):");
+#else
     DebugSerial.println("IF: ESP-NOW peer list:");
+#endif
     if (_espNowPeers.empty()) {
         DebugSerial.println("  (none)");
         return;

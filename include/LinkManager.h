@@ -63,8 +63,9 @@ public:
     bool establishLink(const uint8_t dest_hash[16], const uint8_t dest_pub_key[64],
                        uint8_t out_link_id[16] = nullptr);
 
-    /** Send application data over an established link. */
-    bool sendLinkData(const uint8_t link_id[16], const uint8_t* data, size_t len);
+    /** Send application data over an established link. confirm waits for LINKPROOF. */
+    bool sendLinkData(const uint8_t link_id[16], const uint8_t* data, size_t len,
+                      bool confirm = false);
 
     // --- Methods for RNSLink instances ---
     const uint8_t* getNodeAddress() const;

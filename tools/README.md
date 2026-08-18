@@ -32,8 +32,8 @@ Provisioning (bash):
 
 OTA upload (bash):
 ```bash
-./tools/sign_firmware.sh 0.3.1 .pio/build/esp32-c3-prod-managed/firmware.bin keys/ota-ed25519.pem signature.hex
-./tools/ota_upload.sh 192.168.4.1 80 "$TOKEN" 0.3.1 .pio/build/esp32-c3-prod-managed/firmware.bin signature.hex
+./tools/sign_firmware.sh 0.3.2 .pio/build/esp32-c3-prod-managed/firmware.bin keys/ota-ed25519.pem signature.hex
+./tools/ota_upload.sh 192.168.4.1 80 "$TOKEN" 0.3.2 .pio/build/esp32-c3-prod-managed/firmware.bin signature.hex
 ```
 
 Windows PowerShell (equivalent):
@@ -46,8 +46,8 @@ $device = "192.168.4.1"
 Get-Content -Raw .\myconfig.json | Invoke-RestMethod -Uri "http://$device:80/api/v1/config" -Method Post -Headers @{ Authorization = "Bearer $token" } -ContentType 'application/json'
 
 # OTA upload
-.\tools\sign_firmware.ps1 0.3.1 .\firmware.bin .\keys\ota-ed25519.pem .\signature.hex
-Invoke-RestMethod -Uri "http://$device:80/api/v1/ota" -Method Post -InFile .\firmware.bin -Headers @{ Authorization = "Bearer $token"; 'X-Firmware-Version' = '0.3.1'; 'X-Signature-Ed25519' = (Get-Content .\signature.hex -Raw).Trim() } -ContentType 'application/octet-stream'
+.\tools\sign_firmware.ps1 0.3.2 .\firmware.bin .\keys\ota-ed25519.pem .\signature.hex
+Invoke-RestMethod -Uri "http://$device:80/api/v1/ota" -Method Post -InFile .\firmware.bin -Headers @{ Authorization = "Bearer $token"; 'X-Firmware-Version' = '0.3.2'; 'X-Signature-Ed25519' = (Get-Content .\signature.hex -Raw).Trim() } -ContentType 'application/octet-stream'
 ```
 
 Notes

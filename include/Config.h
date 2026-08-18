@@ -7,7 +7,7 @@
 #include <array> // For group addresses
 
 #ifndef FIRMWARE_VERSION
-#define FIRMWARE_VERSION "0.3.0-dev"
+#define FIRMWARE_VERSION "0.3.2"
 #endif
 
 #ifndef PRODUCTION_BUILD
@@ -241,9 +241,13 @@ extern DebugSerialShim DebugSerial; // Use USB/UART0 for debug (Arduino Serial M
     #endif
 #endif
 
-// BLE provisioning (GATT) for WiFi / callsign setup
+// BLE provisioning (GATT) for WiFi / callsign setup.
+// Reserved compile-time surface only — there is no GATT implementation.
 #ifndef BLE_PROVISIONING_ENABLED
 #define BLE_PROVISIONING_ENABLED 0
+#endif
+#if BLE_PROVISIONING_ENABLED
+#error "BLE_PROVISIONING_ENABLED is reserved; no GATT provisioning service exists"
 #endif
 
 // Runtime metrics endpoint (JSON) and adjustable log levels
@@ -253,7 +257,7 @@ extern DebugSerialShim DebugSerial; // Use USB/UART0 for debug (Arduino Serial M
 
 // Metrics/telemetry configuration
 #ifndef METRICS_UDP_ENABLED
-#define METRICS_UDP_ENABLED 1    // send periodic UDP heartbeat when WiFi is up
+#define METRICS_UDP_ENABLED 0    // unauthenticated UDP metrics are off unless explicitly enabled
 #endif
 #ifndef METRICS_UDP_PORT
 #define METRICS_UDP_PORT 4243    // port used for UDP metrics broadcasts
@@ -296,6 +300,27 @@ extern DebugSerialShim DebugSerial; // Use USB/UART0 for debug (Arduino Serial M
 
 #ifndef ESPNOW_SF_MAX_ATTEMPTS
 #define ESPNOW_SF_MAX_ATTEMPTS 8
+#endif
+
+#ifndef ESPNOW_MAX_PEERS
+#define ESPNOW_MAX_PEERS 20
+#endif
+
+#ifndef HEAP_CRITICAL_BYTES
+#define HEAP_CRITICAL_BYTES 12288
+#endif
+
+#ifndef LINK_DATA_RETRY_MS
+#define LINK_DATA_RETRY_MS 400UL
+#endif
+#ifndef LINK_DATA_MAX_ATTEMPTS
+#define LINK_DATA_MAX_ATTEMPTS 5
+#endif
+#ifndef CHAT_RETRY_MS
+#define CHAT_RETRY_MS 500UL
+#endif
+#ifndef CHAT_MAX_ATTEMPTS
+#define CHAT_MAX_ATTEMPTS 4
 #endif
 
 // Accept all PLAIN destination packets locally (not only subscribed hashes).
@@ -396,13 +421,30 @@ const unsigned long RECENT_ANNOUNCE_TIMEOUT_MS = ANNOUNCE_INTERVAL_MS / 2; // Ho
 
 // --- Link Layer Parameters ---
 const unsigned long LINK_INACTIVITY_TIMEOUT_MS = ROUTE_TIMEOUT_MS * 2; // Timeout for closing inactive links
-const size_t LINK_MAX_ACTIVE = 10; // Max concurrent active links (Adjust based on memory)
+#ifndef LINK_MAX_ACTIVE
+#define LINK_MAX_ACTIVE 20
+#endif
 
 static_assert(LINK_MAX_ACTIVE > 0, "LINK_MAX_ACTIVE must be at least 1");
 
 // --- Routing & Limits ---
-const size_t MAX_ROUTES = 20;             // Max entries in routing table
-const size_t MAX_RECENT_ANNOUNCES = 40; // Max announce IDs to remember for loop prevention
+// Resource caps, not a sold fleet size. Two nodes is enough to mesh; more
+// nodes work until these tables or the airtime fill. MAX_ROUTES is candidate
+// paths (several per destination). Heard-neighbor tracking is diagnostic only
+// because ESP-NOW TX is broadcast.
+#ifndef MAX_ROUTES
+#define MAX_ROUTES 64
+#endif
+#ifndef MAX_RECENT_ANNOUNCES
+#define MAX_RECENT_ANNOUNCES 80
+#endif
+#ifndef MAX_HEARD_NEIGHBORS
+#define MAX_HEARD_NEIGHBORS 32
+#endif
+
+static_assert(MAX_ROUTES >= 8, "MAX_ROUTES must allow a small multi-path mesh");
+static_assert(MAX_RECENT_ANNOUNCES >= 16, "MAX_RECENT_ANNOUNCES must cover an announce burst");
+static_assert(MAX_HEARD_NEIGHBORS >= 8, "MAX_HEARD_NEIGHBORS must track nearby radios");
 
 // Route selection policy: lower hop count wins first, then interface priority,
 // then most recent route update. Override these in build flags to tailor field

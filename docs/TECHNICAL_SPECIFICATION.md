@@ -1,7 +1,7 @@
 # ESP32 Reticulum Gateway Technical Specification
 
 **Document version:** 3.0
-**Updated:** 2026-07-19
+**Updated:** 2026-08-18
 **Canonical target:** `esp32-c3-prod-managed`
 
 ## Product status
@@ -15,7 +15,7 @@ The firmware is a software release candidate for controlled pilots. It is not ap
 | MCU/board | ESP32-C3-DevKitM-1 class, 160 MHz, 4 MB flash |
 | Framework | Arduino-ESP32 from pinned PlatformIO `espressif32@6.12.0` |
 | Optimization | `-Os`, `-Wall`, `-Werror` |
-| Firmware version | `0.3.1` for the current production environment |
+| Firmware version | `0.3.2` for the current production environment |
 | Interfaces | USB KISS, ESP-NOW, WiFi UDP |
 | Management | Runtime JSON, authenticated HTTP API, metrics, signed OTA |
 | Debug/demo traffic | Disabled |

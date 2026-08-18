@@ -48,7 +48,9 @@ intentionally rejected by `PRODUCTION_BUILD`. It requires board-specific analog
 validation, over-the-air interoperability tests, and regional radio compliance
 review before it can become a release feature.
 
-The implemented Reticulum link handshake authenticates and encrypts sessions, but it does not provide automatic data ACKs, retransmission, delivery proofs, resource transfer, or guaranteed ordering. A pilot workflow that needs confirmed delivery must supply an application-level acknowledgement/retry contract or use a full Reticulum endpoint for that function.
+The implemented Reticulum link handshake authenticates and encrypts sessions, including LRRTT and keepalive control traffic. It does not provide automatic data ACKs, retransmission, delivery proofs, resource transfer, or guaranteed ordering. A pilot workflow that needs confirmed delivery must supply an application-level acknowledgement/retry contract or use a full Reticulum endpoint for that function.
+
+Invalid identity material or an invalid managed `/config.json` now fail-closes the dataplane to USB diagnostics. That is required for a factory-provisioned unit; it is not a substitute for the hardware-security and HIL gates below.
 
 ### 2.1.1 Hardware Security Gate
 
@@ -93,11 +95,11 @@ pio run
 Sign the binary:
 
 ```bash
-./tools/sign_firmware.sh 0.3.1 .pio/build/esp32-c3-prod-managed/firmware.bin keys/ota-ed25519.pem release/signature.hex
-./tools/package_release.py --version 0.3.1 \
+./tools/sign_firmware.sh 0.3.2 .pio/build/esp32-c3-prod-managed/firmware.bin keys/ota-ed25519.pem release/signature.hex
+./tools/package_release.py --version 0.3.2 \
   --firmware .pio/build/esp32-c3-prod-managed/firmware.bin \
   --signature release/signature.hex --public-key keys/ota-ed25519.pub.pem \
-  --output-dir release/0.3.1
+  --output-dir release/0.3.2
 ```
 
 The version is part of the signed digest, allowing the device to reject signed-image replay and downgrades while retaining constant-memory verification. It must match the version embedded by `platformio.ini`. The manifest key ID is SHA-256 over the raw 32-byte Ed25519 public key, truncated to 16 hexadecimal characters; provisioning and release tooling enforce the same rule.

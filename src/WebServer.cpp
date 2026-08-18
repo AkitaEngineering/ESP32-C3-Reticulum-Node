@@ -286,12 +286,24 @@ static void appendRouteDiagnostics(JsonArray destinations, const std::vector<Rou
     }
 }
 
-static bool checkAuth(const String &authHeader, bool allowBootstrap = false) {
+static bool checkAuth(const String &authHeader, bool allowBootstrap = false,
+                      bool allowInvalidConfigDiagnostic = false) {
 #if WEBSERVER_AUTH_ENABLED
 #if JSON_CONFIG_ENABLED
-    if (hasSavedConfig() && !validateRuntimeConfigFile(PRODUCTION_BUILD, true)) {
-        LOG_WARN("WebServer: saved configuration failed validation - denying request");
-        return false;
+    const bool configValid = !hasSavedConfig() || validateRuntimeConfigFile(PRODUCTION_BUILD, true);
+    if (hasSavedConfig() && !configValid) {
+        if (allowInvalidConfigDiagnostic) {
+            String expectedToken = getSavedApiToken();
+            expectedToken.trim();
+            if (isPlaceholderApiToken(expectedToken)) {
+                LOG_WARN("WebServer: invalid config diagnostic status allowed");
+                return true;
+            }
+            // A real token is present — still require it below.
+        } else {
+            LOG_WARN("WebServer: saved configuration failed validation - denying request");
+            return false;
+        }
     }
 #endif
     String expected;
@@ -301,6 +313,7 @@ static bool checkAuth(const String &authHeader, bool allowBootstrap = false) {
     expected.trim();
 
     if (isPlaceholderApiToken(expected)) {
+        if (allowInvalidConfigDiagnostic) return true;
         if (allowBootstrap && isBootstrapMode()) {
             LOG_WARN("WebServer: No config present - allowing first-time bootstrap access");
             return true;
@@ -467,7 +480,7 @@ void processHttpClient(WiFiClient &client) {
 
     // Route handling
     if (method == "GET" && path == "/api/v1/status") {
-        if (!checkAuth(authHeader, ALLOW_NETWORK_BOOTSTRAP)) { sendUnauthorized(client); return; }
+        if (!checkAuth(authHeader, ALLOW_NETWORK_BOOTSTRAP, true)) { sendUnauthorized(client); return; }
         reloadRuntimeConfigCache();
         DynamicJsonDocument doc(3072);
         String restartReason;
@@ -490,6 +503,18 @@ void processHttpClient(WiFiClient &client) {
         const bool configValid = validateRuntimeConfigFile(PRODUCTION_BUILD, true, &configValidationReason);
         doc["config_valid"] = configValid;
         if (!configValid) doc["config_error"] = configValidationReason;
+        doc["identity_ready"] = reticulumNode.isIdentityReady();
+        doc["fail_closed"] = reticulumNode.isFailClosed();
+        if (reticulumNode.isFailClosed()) {
+            doc["fail_closed_reason"] = reticulumNode.getFailClosedReason();
+        }
+        doc["management_locked"] = reticulumNode.isManagementLocked();
+        if (reticulumNode.isManagementLocked()) {
+            doc["management_lock_reason"] = reticulumNode.getManagementLockReason();
+        }
+        doc["mesh_enabled"] = reticulumNode.getInterfaceManager().isMeshEnabled();
+        doc["api_transport"] = "http";
+        doc["management_requires_tls_proxy"] = true;
         doc["bootstrap_mode"] = isBootstrapMode();
         doc["wifi_connected"] = wifiConnected;
         doc["wifi_ip"] = wifiConnected ? WiFi.localIP().toString() : String("");
@@ -568,14 +593,43 @@ void processHttpClient(WiFiClient &client) {
 
     } else if (method == "POST" && path == "/api/v1/config") {
         if (!checkAuth(authHeader, ALLOW_NETWORK_BOOTSTRAP)) { sendUnauthorized(client); return; }
-        String validationReason;
-        if (!validateRuntimeConfigJson(body, PRODUCTION_BUILD, true, &validationReason)) {
-            sendResponse(client, 400, "text/plain", String("Invalid config: ") + validationReason);
-            return;
-        }
         DynamicJsonDocument doc(4096);
         DeserializationError err = deserializeJson(doc, body);
         if (err) { sendResponse(client, 400, "text/plain", "Invalid JSON"); return; }
+#if JSON_CONFIG_ENABLED
+        if (SPIFFS.exists(CONFIG_PATH)) {
+            File existing = SPIFFS.open(CONFIG_PATH, FILE_READ);
+            DynamicJsonDocument existingDoc(4096);
+            if (existing && deserializeJson(existingDoc, existing) == DeserializationError::Ok) {
+                JsonObject incomingWifi = doc["wifi"];
+                JsonObject existingWifi = existingDoc["wifi"];
+                if (!incomingWifi.isNull() && !existingWifi.isNull()) {
+                    const char* incomingPassword = incomingWifi["password"] | "";
+                    const char* existingPassword = existingWifi["password"] | "";
+                    if (strlen(incomingPassword) == 0 && strlen(existingPassword) > 0) {
+                        incomingWifi["password"] = existingPassword;
+                    }
+                }
+                JsonObject incomingApi = doc["api"];
+                JsonObject existingApi = existingDoc["api"];
+                if (!incomingApi.isNull() && !existingApi.isNull()) {
+                    const char* incomingToken = incomingApi["token"] | "";
+                    const char* existingToken = existingApi["token"] | "";
+                    if (strlen(incomingToken) == 0 && !isPlaceholderApiToken(String(existingToken))) {
+                        incomingApi["token"] = existingToken;
+                    }
+                }
+            }
+            if (existing) existing.close();
+        }
+#endif
+        String mergedBody;
+        serializeJson(doc, mergedBody);
+        String validationReason;
+        if (!validateRuntimeConfigJson(mergedBody, PRODUCTION_BUILD, true, &validationReason)) {
+            sendResponse(client, 400, "text/plain", String("Invalid config: ") + validationReason);
+            return;
+        }
 #if JSON_CONFIG_ENABLED
         SPIFFS.remove(CONFIG_NEW_PATH);
         File f = SPIFFS.open(CONFIG_NEW_PATH, FILE_WRITE);
@@ -631,7 +685,17 @@ void processHttpClient(WiFiClient &client) {
     } else if (method == "POST" && path == "/api/v1/config/save") {
         if (!checkAuth(authHeader)) { sendUnauthorized(client); return; }
 #if JSON_CONFIG_ENABLED
-        if (SPIFFS.exists(CONFIG_PATH)) sendResponse(client, 200, "text/plain", "saved"); else sendResponse(client, 500, "text/plain", "no config to save");
+        String validationReason;
+        if (!validateRuntimeConfigFile(PRODUCTION_BUILD, true, &validationReason)) {
+            sendResponse(client, hasSavedConfig() ? 400 : 404, "application/json",
+                         String("{\"saved\":false,\"error\":\"") + validationReason + "\"}");
+            return;
+        }
+        DynamicJsonDocument responseDoc(192);
+        responseDoc["saved"] = true;
+        responseDoc["already_committed"] = true;
+        String out; serializeJson(responseDoc, out);
+        sendResponse(client, 200, "application/json", out);
 #else
         sendResponse(client, 404, "text/plain", "JSON config disabled");
 #endif
@@ -642,6 +706,7 @@ void processHttpClient(WiFiClient &client) {
 #if OTA_ENABLED
         if (contentLength == 0) { sendResponse(client, 400, "text/plain", "Empty body"); return; }
         if (signatureHex.length() == 0) { sendResponse(client, 400, "text/plain", "Missing X-Signature-Ed25519 header"); return; }
+        if (firmwareVersion.length() == 0) { sendResponse(client, 400, "text/plain", "Missing X-Firmware-Version header"); return; }
         if (!isNewerFirmwareVersion(firmwareVersion)) { sendResponse(client, 409, "text/plain", "Firmware version must be a newer semantic version"); return; }
         const char *tmpPath = "/ota_upload.bin";
         SPIFFS.remove(tmpPath);
@@ -687,6 +752,7 @@ void processHttpClient(WiFiClient &client) {
         size_t totalReceived = 0;
         const unsigned long transferStart = millis();
         unsigned long lastProgress = transferStart;
+        unsigned long lastDataplane = transferStart;
         const unsigned long inactivityTimeoutMs = 10000;
         const unsigned long totalTimeoutMs = 300000;
         while (remaining > 0 && client.connected() &&
@@ -708,7 +774,12 @@ void processHttpClient(WiFiClient &client) {
                 totalReceived += toRead;
                 lastProgress = millis();
             }
-            delay(1);
+            if (millis() - lastDataplane >= 50) {
+                reticulumNode.serviceDataplane();
+                lastDataplane = millis();
+            } else {
+                delay(1);
+            }
         }
         out.flush(); out.close();
         if (remaining != 0) { sendResponse(client, 408, "text/plain", "Incomplete or timed-out upload"); SPIFFS.remove(tmpPath); return; }
@@ -730,16 +801,34 @@ void processHttpClient(WiFiClient &client) {
         // Apply OTA from temp file
         File fin = SPIFFS.open(tmpPath, FILE_READ);
         if (!fin) { SPIFFS.remove(tmpPath); sendResponse(client, 500, "text/plain", "Failed to open temp file for OTA"); return; }
+        uint8_t imageHeader[8] = {0};
+        if (fin.read(imageHeader, sizeof(imageHeader)) != sizeof(imageHeader) || imageHeader[0] != 0xE9) {
+            fin.close();
+            SPIFFS.remove(tmpPath);
+            sendResponse(client, 400, "text/plain", "Not an ESP firmware image");
+            return;
+        }
+        if (!fin.seek(0)) {
+            fin.close();
+            SPIFFS.remove(tmpPath);
+            sendResponse(client, 500, "text/plain", "Failed to rewind OTA image");
+            return;
+        }
         if (!Update.begin((size_t)fsize)) { fin.close(); SPIFFS.remove(tmpPath); sendResponse(client, 500, "text/plain", "OTA begin failed"); return; }
         const size_t chunk = 1024;
         uint8_t wbuf[chunk];
         size_t totalWritten = 0;
+        unsigned long lastDataplaneWrite = millis();
         while (fin.available()) {
             size_t r = fin.read(wbuf, chunk);
             if (r == 0) break;
             size_t written = Update.write(wbuf, r);
             if (written != r) { Update.abort(); fin.close(); SPIFFS.remove(tmpPath); sendResponse(client, 500, "text/plain", "Write failed"); return; }
             totalWritten += written;
+            if (millis() - lastDataplaneWrite >= 50) {
+                reticulumNode.serviceDataplane();
+                lastDataplaneWrite = millis();
+            }
         }
         fin.close();
         if (totalWritten != fsize) { Update.abort(); SPIFFS.remove(tmpPath); sendResponse(client, 500, "text/plain", "OTA write size mismatch"); return; }
@@ -790,6 +879,9 @@ void WebServerManager::begin() {
         DebugSerial.println("WebServer: SPIFFS mount failed; server not started");
         _serverStarted = false;
         return;
+    }
+    if (SPIFFS.exists("/ota_upload.bin")) {
+        SPIFFS.remove("/ota_upload.bin");
     }
     DebugSerial.println("WebServer: SPIFFS mounted");
     _server.begin();

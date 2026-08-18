@@ -1,8 +1,12 @@
 # ESP32 Reticulum Network Stack Gateway Node
 
-A multi-interface [Reticulum](https://reticulum.network/) gateway firmware for ESP32-series microcontrollers. Routes packets transparently between WiFi (UDP), ESP-NOW, Serial KISS, Bluetooth Classic, LoRa, and amateur-radio (AX.25/APRS) interfaces.
+A [Reticulum](https://reticulum.network/) gateway firmware for ESP32-series microcontrollers. The canonical ESP32-C3 product is a USB KISS TNC plus ESP-NOW mesh relay with optional WiFi UDP, an authenticated HTTP API, and signed OTA.
 
-**Status:** Software release candidate for controlled pilots. Core routing, ESP-NOW mesh, and KISS-over-USB TNC mode have been exercised on ESP32-C3 hardware. Broad or unattended production deployment remains blocked on the hardware-security, HIL, manufacturing, and regulatory gates in `docs/PRODUCTION_READINESS.md`.
+Bluetooth Classic, LoRa, and amateur-radio helpers exist as optional/other-chip code. They are not part of the managed C3 production image.
+
+**Mesh size:** Two or more units. There is no sold “N-node” cap. Tables are resource-bounded (currently 64 route candidates and 80 recent announces); airtime and range usually fill first.
+
+**Status:** Software release candidate for controlled, factory-provisioned pilots. Broad or unattended production deployment remains blocked on the hardware-security, HIL, manufacturing, and regulatory gates in `docs/PRODUCTION_READINESS.md`. The HTTP API is plaintext and must sit behind a TLS VPN or equivalent management gateway.
 
 ---
 
@@ -13,10 +17,10 @@ A multi-interface [Reticulum](https://reticulum.network/) gateway firmware for E
 - **KISS-over-USB TNC** — use an ESP32-C3 as a USB-connected TNC for desktop Reticulum instances
 - **Announce-based routing** — distance-vector routing with 16-byte destination hashes, hop counting, and automatic route expiry
 - **Authenticated encrypted links** — Reticulum-compatible X25519/Ed25519 handshake and Fernet session encryption
-- **LoRa support** — long-range radio via SX1278-compatible modules (Heltec LoRa32 v3)
-- **Experimental HAM radio** — AX.25/APRS framing and AFSK components for development builds; not production-qualified
 - **HTTP REST API** — optional runtime configuration, signed OTA updates, and metrics endpoint
-- **Multi-platform** — builds for ESP32, ESP32-C3, ESP32-S2, ESP32-S3, and Heltec LoRa boards
+- **Fail-closed production boot** — invalid identity or managed config keeps USB diagnostics and disables mesh
+- **Multi-platform builds** — ESP32, ESP32-C3, ESP32-S2, ESP32-S3, and Heltec LoRa boards compile; only the C3 managed target is the supported product
+- **Optional radios** — LoRa (board-specific RadioLib adapter), Bluetooth Classic on original ESP32, and experimental HAM helpers are not production-qualified
 
 ## Supported Hardware
 
@@ -197,6 +201,8 @@ All compile-time settings are in `include/Config.h`. Key parameters:
 | `MAX_ROUTES` | 20 | Maximum routing table entries |
 | `KISS_SERIAL_SPEED` | 115200 | KISS UART baud rate |
 
+Unprovisioned managed images (no `/config.json`) still run USB KISS + ESP-NOW mesh. WiFi and the HTTP API stay locked until a valid per-device config is present.
+
 Build flags control feature inclusion:
 
 | Flag | Effect |
@@ -210,7 +216,7 @@ Build flags control feature inclusion:
 | `-DLORA_ENABLED=1` | Enable LoRa radio interface |
 | `-DHAM_MODEM_ENABLED=1` | Enable experimental HAM components; rejected by `PRODUCTION_BUILD` |
 | `-DMETRICS_ENABLED=1` | Enable /metrics endpoint |
-| `-DBLE_PROVISIONING_ENABLED=1` | Reserved for BLE GATT provisioning; not included in production builds |
+| `-DBLE_PROVISIONING_ENABLED=1` | Reserved flag only; there is no GATT service and the flag is a compile error |
 
 ## Debug Commands
 
@@ -220,7 +226,11 @@ Send a local command packet (context `0xB0`) over the serial or Bluetooth KISS i
 |---|---|
 | `routes` | Print the current routing table |
 | `peers` | Print registered ESP-NOW peers |
+| `status` | Print identity, mesh, and config health |
+| `say <text>` | Broadcast a PLAIN chat message and wait for ACK |
 | *(empty payload)* | Ping — node prints "alive" confirmation |
+
+On the debug UART you can also type `say hello` to send that chat message without a KISS host.
 
 ## Documentation
 

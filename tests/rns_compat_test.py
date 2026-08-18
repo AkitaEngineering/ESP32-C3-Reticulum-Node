@@ -315,6 +315,36 @@ def test_max_hops():
     return match
 
 
+def test_link_control_token_encryption():
+    """Official RNS encrypts LRRTT and keepalive payloads with the link Token."""
+    print("\n=== Link Control Token Encryption ===")
+    from RNS.Cryptography.Token import Token
+    from RNS.Cryptography.HKDF import hkdf
+
+    shared = bytes(range(32))
+    link_id = bytes(range(16, 32))
+    derived = hkdf(length=64, derive_from=shared, salt=link_id, context=None)
+    token = Token(derived)
+
+    rtt = bytes([0xCA, 0x3E, 0x00, 0x00, 0x00])
+    keepalive = bytes([0xFF])
+    encrypted_rtt = token.encrypt(rtt)
+    encrypted_ka = token.encrypt(keepalive)
+    print(f"  LRRTT token length: {len(encrypted_rtt)}")
+    print(f"  Keepalive token length: {len(encrypted_ka)}")
+
+    ok = (
+        len(encrypted_rtt) >= 64
+        and len(encrypted_ka) >= 64
+        and token.decrypt(encrypted_rtt) == rtt
+        and token.decrypt(encrypted_ka) == keepalive
+        and encrypted_rtt != rtt
+        and encrypted_ka != keepalive
+    )
+    print(f"  Official Token encrypts LRRTT/keepalive: {ok}")
+    return ok
+
+
 def test_kiss_framing():
     """Verify KISS framing constants."""
     print("\n=== KISS Framing ===")
@@ -352,6 +382,7 @@ def main():
     results.append(("KISS Framing",     test_kiss_framing()))
     results.append(("Packet Wire Fmt",  test_packet_wire_format()))
     results.append(("Announce Struct",  test_announce_structure()))
+    results.append(("Link Token Ctrl",  test_link_control_token_encryption()))
 
     print("\n" + "=" * 60)
     print("  RESULTS SUMMARY")
@@ -385,10 +416,9 @@ def main():
   1. ANNOUNCE FORMAT: VERIFIED. This script confirms the firmware uses the
       reference announce layout [PUB_KEY 64][NAME_HASH 10][RANDOM_HASH 10][SIG 64].
 
-  2. LINK PROTOCOL: NOT EXERCISED HERE. The firmware contains link-handshake
-      code, but this script does not run a live LINKREQUEST/LRPROOF/LRRTT exchange
-      against real hardware.
-      => NEXT STEP: perform an on-device interop test with a reference RNS peer.
+  2. LINK PROTOCOL: Token encryption of LRRTT/keepalive is verified against
+      the official RNS Cryptography.Token API. A live LINKREQUEST/LRPROOF
+      exchange still requires hardware against a reference RNS peer.
 
   3. ENCRYPTED SINGLE DESTINATIONS: NOT EXERCISED HERE. This script validates
       hashes, flags, KISS framing, plain packet format, and announce structure.

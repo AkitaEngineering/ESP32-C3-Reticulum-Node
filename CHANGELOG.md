@@ -12,6 +12,23 @@ Revisions are listed in reverse chronological order (most recent first).
 
 ---
 
+### Firmware 0.3.2 — Fail-Closed Identity and RNS Link Control (2026-08-18)
+
+- Missing or invalid managed config now locks WiFi/HTTP only. Identity-ready units still run USB KISS + ESP-NOW mesh from two nodes upward, with no sold fleet-size cap.
+- Mesh tables are resource-bounded (64 route candidates, 80 announce-cache slots, 20 concurrent links). ESP-NOW TX stays on the broadcast peer so the driver peer table is not consumed by unicast neighbors.
+- Confirmed link sends retry the same wire frame until an encrypted `LINKPROOF` arrives. Debug `say <text>` does the same for PLAIN mesh chat with an application ACK.
+
+- Encrypt LRRTT and keepalive payloads with the same Fernet token as application data and `LINKCLOSE`, matching reference RNS.
+- Bind persistent identities to the chip eFuse MAC, CRC-protect EEPROM keys, migrate v1 blobs, and generate a new identity on clone or corruption.
+- Fail-closed USB-only boot when identity is missing or managed production config is invalid; LED fault-blinks; `status` reports `config_error`.
+- Allow read-only `GET /api/v1/status` when saved config is invalid so operators can see `config_error` / `fail_closed`.
+- Disable unauthenticated UDP metrics on the managed production image.
+- Pump the mesh dataplane during OTA upload/write; reject non-ESP images (`0xE9`) before `Update.begin()`.
+- Preserve WiFi password and API token when a GET-redacted config is written back.
+- Gate KISS `0x06` diagnostics behind `DEBUG_ENABLED`; bound ESP-NOW peers; shed store-and-forward on low heap.
+- Add unit tests for encrypted link control, forged LRPROOF, identity CRC/clone, ESP-NOW fragment CRC, store-forward drop-oldest, and route failover.
+- Document the C3 product boundary honestly; BLE provisioning remains a reserved compile-time error.
+
 ### Firmware 0.3.1 — Production Hardening Release Candidate (2026-07-19)
 
 - Hardened Reticulum packet validation, signed announces, identity encryption, authenticated link establishment, negotiated MTU handling, interface binding, routing failover, and ESP-NOW fragmentation/concurrency.

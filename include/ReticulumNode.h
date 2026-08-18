@@ -46,6 +46,16 @@ public:
     // Return current in-memory packet counter (for tests/inspection)
     uint16_t getPacketCounter() const;
     const char* getRuntimeAppName() const { return _appName.c_str(); }
+    bool isFailClosed() const { return _failClosed; }
+    bool isManagementLocked() const { return _managementLocked; }
+    const char* getFailClosedReason() const { return _failClosedReason.c_str(); }
+    const char* getManagementLockReason() const { return _managementLockReason.c_str(); }
+    bool isIdentityReady() const { return _identity.isReady(); }
+    bool isDataplaneEnabled() const { return !_failClosed; }
+    // Service KISS/ESP-NOW/links without touching the HTTP server (OTA pump).
+    void serviceDataplane();
+    void enterFailClosed(const char* reason);
+    void lockManagement(const char* reason);
 
 private:
     // --- Initialization Helpers ---
@@ -103,13 +113,33 @@ private:
     std::vector<std::array<uint8_t, RNS_DESTINATION_HASH_SIZE>> _subscribedGroups;
 
     // Data packet dedup: ring buffer of recent forwarded-packet hashes
-    static constexpr size_t RECENT_DATA_PKT_SIZE = 64;
+    static constexpr size_t RECENT_DATA_PKT_SIZE = 96;
     std::array<std::array<uint8_t, RNS_TRUNCATED_HASHLENGTH_BYTES>, RECENT_DATA_PKT_SIZE> _recentDataPkts = {};
     size_t _recentDataPktIdx = 0;
     size_t _recentDataPktCount = 0;
 
     // Debug CLI input buffer
     String _debugCmdBuf;
+
+    bool _failClosed = false;
+    bool _managementLocked = false;
+    String _failClosedReason;
+    String _managementLockReason;
+    unsigned long _lastFaultLedToggle = 0;
+    bool _faultLedOn = false;
+
+    struct PendingChat {
+        bool active = false;
+        uint8_t packet[MAX_PACKET_SIZE] = {0};
+        size_t packetLen = 0;
+        uint8_t hash[RNS_TRUNCATED_HASHLENGTH_BYTES] = {0};
+        uint8_t attempts = 0;
+        unsigned long nextTryMs = 0;
+    };
+    PendingChat _pendingChat;
+    void sendChatMessage(const String& message);
+    void handleChatPayload(const std::vector<uint8_t>& payload, InterfaceType interface);
+    void retryPendingChat();
 };
 
 #endif // RETICULUM_NODE_H

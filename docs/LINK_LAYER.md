@@ -1,9 +1,9 @@
 # Reticulum Link Sessions
 
-**Document version:** 3.0
-**Updated:** 2026-07-19
+**Document version:** 3.1
+**Updated:** 2026-08-18
 
-This document describes the link functionality that is actually implemented in `Link.cpp` and `LinkManager.cpp`. The implementation establishes authenticated, encrypted Reticulum link sessions. It does not currently implement Reticulum resource transfer, packet delivery proofs, request/channel APIs, or automatic data retransmission.
+This document describes the link functionality that is actually implemented in `Link.cpp` and `LinkManager.cpp`. The implementation establishes authenticated, encrypted Reticulum link sessions. After the proof is verified, LRRTT, keepalive, close, and application data are Fernet-encrypted like reference RNS. It does not currently implement Reticulum resource transfer, packet delivery proofs, request/channel APIs, or automatic data retransmission.
 
 ## Establishment
 
@@ -21,7 +21,7 @@ ACTIVE ----------LINKCLOSE------> CLOSED
 3. The responder performs X25519 key agreement and derives 64 bytes with HKDF-SHA256 using the link ID as salt.
 4. The responder signs `link_id || responder_x25519_public || responder_ed25519_public || signalling` with its announced identity and returns an `LRPROOF`.
 5. The initiator verifies the proof against the destination's announced Ed25519 key before deriving or accepting session keys.
-6. The initiator returns an `LRRTT` MessagePack float and both ends enter `ACTIVE`.
+6. The initiator returns an encrypted `LRRTT` MessagePack float and both ends enter `ACTIVE`.
 
 All-zero X25519 shared secrets, unsupported modes, malformed proof sizes, invalid signatures, non-finite RTT values, and invalid MTUs are rejected. A successfully authenticated session is bound to the physical/logical interface on which the handshake completed; subsequent packets arriving through another interface are discarded.
 
@@ -31,9 +31,9 @@ All-zero X25519 shared secrets, unsupported modes, malformed proof sizes, invali
 |---|---:|---:|---:|---|
 | Link request | `LINKREQ` | `SINGLE` | `0x00` | X25519 pub (32), Ed25519 pub (32), signalling (3) |
 | Link proof | `PROOF` | `LINK` | `0xFF` | signature (64), responder X25519 pub (32), optional signalling (3) |
-| RTT | `DATA` | `LINK` | `0xFE` | MessagePack float32/float64 |
+| RTT | `DATA` | `LINK` | `0xFE` | Fernet(MessagePack float32/float64) |
 | Application data | `DATA` | `LINK` | `0x00` | authenticated encrypted token |
-| Keepalive | `DATA` | `LINK` | `0xFA` | one byte: `0xFF` request or `0xFE` response |
+| Keepalive | `DATA` | `LINK` | `0xFA` | Fernet(one byte: `0xFF` request or `0xFE` response) |
 | Close | `DATA` | `LINK` | `0xFC` | encrypted 16-byte link ID |
 
 The signalling field encodes the negotiated MTU and mode. This firmware accepts AES-256-CBC mode and an MTU no larger than the 500-byte Reticulum MTU. Outgoing encrypted packets are rejected if their complete Reticulum packet would exceed the negotiated MTU.
@@ -56,6 +56,6 @@ The first 32 derived bytes are the HMAC key and the next 32 are the AES key. HMA
 
 ## Delivery semantics
 
-`sendLinkData()` performs one encrypted send and returns false if the selected transport rejects the packet. A true return means the transport accepted the packet locally; it is not end-to-end delivery confirmation. Handshake packets likewise fail their state transition when the bound transport rejects them. There is no sequence window, ACK queue, retry timer, fragmentation/resource protocol, or guaranteed in-order delivery in this firmware. Applications that require confirmed delivery must add an application-level acknowledgement/retry contract or use a full Reticulum implementation that supplies the missing delivery-proof/resource mechanisms.
+`sendLinkData(link, data, len)` is still a single encrypted send: a true return means the local transport accepted the packet. `sendLinkData(..., confirm=true)` stores that exact wire frame and retries it until a matching encrypted `LINKPROOF` (32-byte packet hash) arrives or `LINK_DATA_MAX_ATTEMPTS` is exhausted. Receivers emit that proof automatically after a successful decrypt. There is still no multi-packet window, resource transfer, or official RNS delivery-proof/resource protocol. PLAIN mesh chat (`say <text>` on the debug UART) uses a separate application ACK/retry.
 
 Hardware acceptance must exercise link establishment, forged-proof rejection, cross-interface injection rejection, negotiated-MTU rejection, encrypted payload exchange, inactivity cleanup, and link close on two physical devices.

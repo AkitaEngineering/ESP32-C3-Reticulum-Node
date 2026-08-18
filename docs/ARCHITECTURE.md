@@ -35,7 +35,7 @@ The canonical `esp32-c3-prod-managed` artifact enables USB KISS, ESP-NOW, WiFi U
 
 ## Routing model
 
-`RoutingTable` stores bounded candidate paths per destination. Selection is ordered by hop count, configured interface priority, and freshness. A candidate records its ingress interface and interface-specific next-hop metadata such as ESP-NOW MAC or UDP address/port. Interface health is considered during selection. Routes expire after three missed 30-second announces plus 15 seconds (105 seconds by default).
+`RoutingTable` stores bounded candidate paths per destination (64 candidates by default). Selection is ordered by hop count, configured interface priority, and freshness. A candidate records its ingress interface and interface-specific next-hop metadata such as ESP-NOW MAC or UDP address/port. Interface health is considered during selection. Routes expire after three missed 30-second announces plus 15 seconds (105 seconds by default).
 
 Announces are forwarded only once within the recent-announce window. The recent-announce cache has a strict entry ceiling as well as time-based expiry, including during a flood of fresh valid announces. Freshness and eviction use wrap-safe uptime ages. Normal packet forwarding uses the packet hash for duplicate suppression and preserves Header Type 1/2, propagation, destination, context flag, context, and payload.
 
@@ -50,7 +50,7 @@ Announces are forwarded only once within the recent-announce window. The recent-
 
 ## Identity and session security
 
-The persistent identity contains X25519 and Ed25519 private material in EEPROM. Announce identities are verified before being trusted. SINGLE destination encryption derives a one-time shared key from an ephemeral X25519 public key. Link sessions authenticate the responder's announced Ed25519 identity before accepting derived keys and bind the active session to its handshake interface.
+The persistent identity contains X25519 and Ed25519 private material in EEPROM, bound to the chip eFuse MAC and protected by a CRC. A cloned image or corrupt blob is rejected and a new identity is generated. If identity initialization fails, or a managed production config is invalid, the node enters fail-closed USB-only mode and does not join the mesh. Announce identities are verified before being trusted. SINGLE destination encryption derives a one-time shared key from an ephemeral X25519 public key. Link sessions authenticate the responder's announced Ed25519 identity before accepting derived keys and bind the active session to its handshake interface.
 
 Fernet-style tokens authenticate IV and ciphertext with HMAC-SHA256 and use AES-256-CBC with PKCS#7 padding. Authentication occurs before decryption; sensitive derived material is wiped when possible. The current Arduino build does not provide Secure Boot or Flash Encryption, so physical extraction resistance is a release gate rather than an implemented guarantee.
 
@@ -58,7 +58,7 @@ Fernet-style tokens authenticate IV and ciphertext with HMAC-SHA256 and use AES-
 
 The HTTP server is a small synchronous REST implementation, not a browser UI. It limits request/header/body sizes, rejects ambiguous security headers, requires exact Bearer authentication, redacts secrets from reads, validates both preprovisioned and API-submitted configuration through one validator, and commits configuration through a verified temporary file. A malformed saved configuration fails authentication closed and is reported through startup diagnostics.
 
-OTA uploads are streamed to SPIFFS, hashed with a version-bound domain separator, verified with the provisioned Ed25519 public key, and only then passed to the ESP update API. Version comparison rejects replay and downgrade. A pending OTA slot is confirmed only after identity, interfaces, management services, and production configuration pass startup checks; otherwise the firmware actively requests rollback and reboot. The HTTP plane is plaintext and must live behind an encrypted trusted management boundary.
+OTA uploads are streamed to SPIFFS, hashed with a version-bound domain separator, verified with the provisioned Ed25519 public key, checked for the ESP image magic `0xE9`, and only then passed to the ESP update API. The mesh dataplane is pumped during the upload so KISS/ESP-NOW keep moving. Version comparison rejects replay and downgrade. A pending OTA slot is confirmed only after identity, interfaces, management services, and production configuration pass startup checks; otherwise the firmware actively requests rollback and reboot. The HTTP plane is plaintext and must live behind an encrypted trusted management boundary.
 
 ## Concurrency and resource bounds
 

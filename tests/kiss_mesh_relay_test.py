@@ -132,11 +132,8 @@ def monitor_board_b(stop_event: threading.Event, results: list):
                         "ESP-NOW RX",
                         "App Layer Received",
                         "KISS mesh test",
-                        "Received packet",
-                        "PLAIN",
-                        "from PC",
-                        "Deser",
-                        "dest match",
+                        "Accepting PLAIN packet",
+                        "Packet addressed to subscribed PLAIN",
                     ]):
                         results.append(text)
         ser.close()

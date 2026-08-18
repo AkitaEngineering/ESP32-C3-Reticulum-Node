@@ -58,9 +58,10 @@ bool LinkManager::establishLink(const uint8_t dest_hash[16], const uint8_t dest_
     return true;
 }
 
-bool LinkManager::sendLinkData(const uint8_t link_id[16], const uint8_t* data, size_t len) {
+bool LinkManager::sendLinkData(const uint8_t link_id[16], const uint8_t* data, size_t len,
+                               bool confirm) {
     auto link = findLink(link_id);
-    return link && link->sendData(data, len);
+    return link && link->sendData(data, len, confirm);
 }
 
 // ========================================================================
@@ -83,6 +84,18 @@ void LinkManager::processPacket(const RnsPacketInfo& packetInfo, InterfaceType i
 // ========================================================================
 
 void LinkManager::handleLinkRequest(const RnsPacketInfo& packetInfo, InterfaceType interface) {
+    if (!_ownerRef.getIdentity().isReady()) {
+        DebugSerial.println("! LinkManager: identity not ready, dropping LINKREQUEST");
+        return;
+    }
+    if (_ownerRef.isFailClosed()) {
+        DebugSerial.println("! LinkManager: fail-closed, dropping LINKREQUEST");
+        return;
+    }
+    if (ESP.getFreeHeap() < HEAP_CRITICAL_BYTES) {
+        DebugSerial.println("! LinkManager: heap critical, dropping LINKREQUEST");
+        return;
+    }
     // Validate payload size: [X25519_pub 32][Ed25519_sig_pub 32][signalling 3] = 67
     if (packetInfo.data.size() != RNS_LINK_REQUEST_SIZE) {
         DebugSerial.print("! LinkManager: Invalid LINKREQUEST size ");

@@ -9,8 +9,8 @@
  *   2. Responder validates, performs X25519 ECDH, derives keys via HKDF-SHA256
  *   3. Responder sends LRPROOF: [signature 64][X25519_pub 32][signalling 3]
  *   4. Initiator validates proof, performs ECDH, derives shared keys
- *   5. Initiator sends LRRTT with msgpacked RTT
- *   6. Link is ACTIVE — all data encrypted with Fernet tokens
+ *   5. Initiator sends encrypted LRRTT with msgpacked RTT
+ *   6. Link is ACTIVE — LRRTT, keepalive, close, and data use Fernet tokens
  *
  * Link ID = truncated_hash(hashable_part without MTU signalling)
  * Key derivation: HKDF-SHA256(shared_key, salt=link_id, context=empty, length=64)
@@ -88,7 +88,8 @@ public:
     // --- Core operations ---
     bool establish();
     void handlePacket(const RnsPacketInfo& packetInfo, InterfaceType incomingInterface);
-    bool sendData(const uint8_t* data, size_t len);
+    bool sendData(const uint8_t* data, size_t len, bool confirm = false);
+    bool hasInflight() const { return _inflight.active; }
     void close(bool notifyPeer = true);
     void checkTimeouts();
 
@@ -102,7 +103,7 @@ public:
     // --- Crypto operations for link data ---
     std::vector<uint8_t> encrypt(const uint8_t* plaintext, size_t len);
     std::vector<uint8_t> decrypt(const uint8_t* ciphertext, size_t len);
-    bool decrypt(const uint8_t* ciphertext, size_t len, std::vector<uint8_t>& plaintext);
+    bool decrypt(const uint8_t* ciphertext, size_t len, std::vector<uint8_t>& plaintext) const;
     void sign(uint8_t signature[64], const uint8_t* message, size_t msg_len);
 
     // --- Handshake (called by LinkManager) ---
@@ -112,15 +113,39 @@ public:
                        InterfaceType incomingInterface);
     bool handleRTT(const uint8_t* data, size_t len);
     bool setMtu(uint32_t mtu);
+    bool sendKeepalive();
 
     // --- Signalling helpers (public for LinkManager) ---
     static void buildSignallingBytes(uint8_t out[3], uint32_t mtu, uint8_t mode);
     static uint32_t mtuFromSignalling(const uint8_t sig[3]);
     static uint8_t modeFromSignalling(const uint8_t sig[3]);
+    static bool encodeRttPayload(float rtt, uint8_t out[5]);
+    static bool decodeRttPayload(const uint8_t* data, size_t len, float& rtt);
+    static bool verifyProofSignature(const uint8_t* proof_data, size_t proof_len,
+                                     const uint8_t link_id[16],
+                                     const uint8_t expected_sig_pub[32],
+                                     uint8_t peer_x25519_pub[32],
+                                     uint8_t signalling[3],
+                                     bool& has_signalling);
 
 private:
     void updateActivity() { _lastActivityTime = millis(); }
     void wipeKeys();
+    bool sendEncryptedContext(uint8_t context, const uint8_t* plaintext, size_t len);
+    bool unwrapLinkPayload(const uint8_t* data, size_t len, std::vector<uint8_t>& plaintext) const;
+    void sendDataProof(const uint8_t packetHash[32]);
+    void handleDataProof(const uint8_t* data, size_t len);
+    void retryInflight(unsigned long now);
+
+    struct InflightData {
+        bool active = false;
+        uint8_t wire[MAX_PACKET_SIZE] = {0};
+        size_t wireLen = 0;
+        uint8_t hash[32] = {0};
+        uint8_t attempts = 0;
+        unsigned long nextTryMs = 0;
+    };
+    InflightData _inflight;
 
     // Identity
     bool _initiator;
@@ -163,6 +188,7 @@ private:
     // Timing
     unsigned long _lastActivityTime;
     unsigned long _requestTime;
+    unsigned long _lastKeepaliveTime;
     float _rtt;
     bool _rttMeasured;
 };

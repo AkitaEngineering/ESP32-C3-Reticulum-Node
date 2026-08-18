@@ -40,7 +40,12 @@ def main() -> int:
     parser.add_argument("--node-name", help="Friendly node name; defaults to device ID")
     parser.add_argument("--wifi-ssid", default="", help="WiFi SSID for STA mode")
     parser.add_argument("--wifi-password", default="", help="WiFi password for STA mode")
-    parser.add_argument("--allow-espnow-only", action="store_true", help="Allow an empty WiFi SSID for offline USB/ESP-NOW units")
+    parser.add_argument(
+        "--allow-espnow-only",
+        action="store_true",
+        help="Allow an empty WiFi SSID for offline USB builds only. "
+             "The managed production firmware (PRODUCTION_BUILD=1) rejects empty SSIDs.",
+    )
     parser.add_argument("--rns-app-name", default="esp32.node", help="Reticulum application name")
     parser.add_argument("--api-public-key", required=True, help="OTA Ed25519 public key, 64 hex characters")
     parser.add_argument("--template", default="data/config.example.json", help="Template config JSON")
@@ -59,6 +64,12 @@ def main() -> int:
         parser.error("--wifi-ssid must be at most 32 UTF-8 bytes")
     if not args.wifi_ssid and not args.allow_espnow_only:
         parser.error("--wifi-ssid is required for managed production units (or pass --allow-espnow-only)")
+    if args.allow_espnow_only and not args.wifi_ssid:
+        print(
+            "warning: empty SSID is rejected by PRODUCTION_BUILD firmware; "
+            "use this only for offline USB images",
+            file=sys.stderr,
+        )
     password_bytes = args.wifi_password.encode("utf-8")
     valid_passphrase = (
         not password_bytes

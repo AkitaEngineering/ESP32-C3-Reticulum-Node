@@ -10,6 +10,7 @@
 #include <esp_ota_ops.h>
 #include <WiFi.h>             // For WiFi.status(), WiFi.macAddress() in printStatus
 #include <freertos/FreeRTOS.h> // for uxTaskGetStackHighWaterMark
+#include <esp_task_wdt.h>
 #if WEBSERVER_ENABLED
 #include "WebServer.h"
 static WebServerManager _webServerManager;
@@ -37,7 +38,7 @@ uint16_t nextValidPacketCounter(uint16_t currentCounter) {
     return static_cast<uint16_t>(currentCounter + 1u);
 }
 
-#if METRICS_ENABLED
+#if METRICS_ENABLED && METRICS_UDP_ENABLED
 void appendInterfaceHealthObject(JsonObject interfaces, const char* name, const InterfaceHealthSnapshot& snapshot) {
     JsonObject interfaceDoc = interfaces.createNestedObject(name);
     interfaceDoc["supported"] = snapshot.supported;
@@ -105,6 +106,7 @@ void ReticulumNode::setup() {
         DebugSerial.println();
     } else {
         LOG_ERROR("Failed to initialize RNS identity!");
+        enterFailClosed("identity_unavailable");
     }
 
     _subscribedGroups = SUBSCRIBED_GROUPS; // Copy extra groups from Config.h
@@ -128,7 +130,16 @@ void ReticulumNode::setup() {
         LOG_WARN("WiFi SSID is empty; WiFi management and UDP will be unavailable.");
     }
 
-    // Setup interfaces (which also sets up UDP, ESP-NOW etc)
+#if PRODUCTION_BUILD
+    String earlyConfigReason;
+    if (!validateRuntimeConfigFile(true, true, &earlyConfigReason)) {
+        lockManagement(earlyConfigReason.length() ? earlyConfigReason.c_str() : "production_config_invalid");
+    }
+#endif
+
+    // USB KISS always. Mesh stays up unless identity failed. Missing
+    // management config only locks WiFi/HTTP, not ESP-NOW.
+    _interfaceManager.setMeshEnabled(!_failClosed);
     _interfaceManager.setup();
 
     // Initialize timers
@@ -141,30 +152,35 @@ void ReticulumNode::setup() {
     LOG_INFO("Node Setup Complete. Free Heap: %lu", static_cast<unsigned long>(ESP.getFreeHeap()));
 
 #if WEBSERVER_ENABLED
-    _webServerManager.begin();
+    if (!_failClosed && !_managementLocked) {
+        _webServerManager.begin();
+    } else {
+        LOG_WARN("HTTP control plane not started (%s)",
+                 _failClosed ? _failClosedReason.c_str() : _managementLockReason.c_str());
+    }
 #endif
 
 #if PRODUCTION_BUILD
     String configValidationReason;
-    const bool productionConfigValid = validateRuntimeConfigFile(true, true, &configValidationReason);
-    if (!productionConfigValid) {
-        LOG_ERROR("Production configuration invalid: %s", configValidationReason.c_str());
+    if (!_failClosed && !_managementLocked &&
+        !validateRuntimeConfigFile(true, true, &configValidationReason)) {
+        lockManagement(configValidationReason.c_str());
     }
 #endif
 
-    // The pinned ESP32 framework enables bootloader rollback. Confirm a newly
-    // booted OTA slot only after identity, interfaces, and management services
-    // have completed their initialization.
+    // Confirm a newly booted OTA slot after identity and the dataplane start.
+    // Unprovisioned mesh units still confirm if ESP-NOW came up; only a dead
+    // identity fails the image.
     const esp_partition_t* runningPartition = esp_ota_get_running_partition();
     esp_ota_img_states_t otaState;
     if (runningPartition && esp_ota_get_state_partition(runningPartition, &otaState) == ESP_OK &&
         otaState == ESP_OTA_IMG_PENDING_VERIFY) {
-        bool startupHealthy = _identity.isReady() && _interfaceManager.isEspNowInitialized();
+        bool startupHealthy = _identity.isReady() && !_failClosed &&
+                              _interfaceManager.isEspNowInitialized();
 #if WEBSERVER_ENABLED
-        startupHealthy = startupHealthy && _webServerManager.isStarted();
-#endif
-#if PRODUCTION_BUILD
-        startupHealthy = startupHealthy && productionConfigValid;
+        if (!_managementLocked) {
+            startupHealthy = startupHealthy && _webServerManager.isStarted();
+        }
 #endif
         if (!startupHealthy) {
             LOG_ERROR("Pending OTA image failed startup health checks; rolling back");
@@ -176,21 +192,56 @@ void ReticulumNode::setup() {
     }
 }
 
-void ReticulumNode::loop() {
-    // unsigned long now = millis(); // Get time once per loop (unused)
+void ReticulumNode::enterFailClosed(const char* reason) {
+    _failClosed = true;
+    _failClosedReason = reason ? reason : "unspecified";
+    LOG_ERROR("Fail-closed: %s", _failClosedReason.c_str());
+    _interfaceManager.setMeshEnabled(false);
+    if (_interfaceManager.isEspNowInitialized()) {
+        _interfaceManager.disableEspNow();
+    }
+    setStatusLed(false);
+}
 
-    _interfaceManager.loop();     // Process interface inputs
-    _linkManager.checkAllTimeouts(); // Check Link timeouts/retransmissions
-    _routingTable.prune(&_interfaceManager); // Prune old routes, pass IfMgr for peer removal
-    sendAnnounceIfNeeded();     // Send periodic announce
-    checkMemoryUsage();         // Check free memory
-    processDebugCommands();     // Process text commands from debug serial
+void ReticulumNode::lockManagement(const char* reason) {
+    _managementLocked = true;
+    _managementLockReason = reason ? reason : "unprovisioned";
+    LOG_WARN("Management locked, mesh still enabled: %s", _managementLockReason.c_str());
+}
+
+void ReticulumNode::serviceDataplane() {
+    esp_task_wdt_reset();
+    _interfaceManager.loop();
+    _linkManager.checkAllTimeouts();
+    if (!_failClosed) {
+        _routingTable.prune(&_interfaceManager);
+    }
+}
+
+void ReticulumNode::loop() {
+    esp_task_wdt_reset();
+    serviceDataplane();
+    sendAnnounceIfNeeded();
+    checkMemoryUsage();
+    processDebugCommands();
+
+    retryPendingChat();
+
+    if (_failClosed || _managementLocked) {
+        const unsigned long now = millis();
+        const unsigned long period = _failClosed ? 250UL : 500UL;
+        if (now - _lastFaultLedToggle >= period) {
+            _lastFaultLedToggle = now;
+            _faultLedOn = !_faultLedOn;
+            setStatusLed(_faultLedOn);
+        }
+    }
 
 #if WEBSERVER_ENABLED
-    _webServerManager.loop();
+    if (!_failClosed && !_managementLocked) {
+        _webServerManager.loop();
+    }
 #endif
-
-    // delay(1); // Generally avoid delay() in main loop if possible
 }
 
 // --- Config Loading/Saving ---
@@ -386,6 +437,11 @@ void ReticulumNode::checkMemoryUsage() {
                  highwater,
                  _routingTable.getRouteCount(),
                  _linkManager.getActiveLinkCount());
+        if (free_heap < HEAP_CRITICAL_BYTES) {
+            LOG_WARN("Heap below %u bytes; shedding store-and-forward and refusing new links",
+                     static_cast<unsigned>(HEAP_CRITICAL_BYTES));
+            _interfaceManager.dropStoreForwardQueue();
+        }
         // Print esp-now peers for debugging (may be verbose)
         _interfaceManager.printEspNowPeers();
 
@@ -413,8 +469,9 @@ void ReticulumNode::processDebugCommands() {
         if (c == '\n' || c == '\r') {
             _debugCmdBuf.trim();
             if (_debugCmdBuf.length() > 0) {
-                String cmd = _debugCmdBuf;
+                String raw = _debugCmdBuf;
                 _debugCmdBuf = "";
+                String cmd = raw;
                 cmd.toLowerCase();
 
                 if (cmd == "status") {
@@ -427,15 +484,17 @@ void ReticulumNode::processDebugCommands() {
                     _interfaceManager.enableEspNow();
                 } else if (cmd == "espnow off") {
                     _interfaceManager.disableEspNow();
+                } else if (cmd.startsWith("say ")) {
+                    sendChatMessage(raw.substring(4));
                 } else if (cmd == "help") {
-                    DebugSerial.println("Commands: status, routes, peers, espnow on/off, help");
+                    DebugSerial.println("Commands: status, routes, peers, say <text>, espnow on/off, help");
                 } else {
                     DebugSerial.print("Unknown command: ");
                     DebugSerial.println(cmd);
                     DebugSerial.println("Type 'help' for available commands.");
                 }
             }
-        } else if (_debugCmdBuf.length() < 32) {
+        } else if (_debugCmdBuf.length() < 96) {
             _debugCmdBuf += c;
         }
     }
@@ -445,24 +504,138 @@ void ReticulumNode::printStatus() {
     DebugSerial.println("=== Node Status ===");
     DebugSerial.print("  Address: ");  printNodeAddress();
     DebugSerial.print("  App Name: "); DebugSerial.println(_appName);
+    DebugSerial.print("  Identity: "); DebugSerial.println(_identity.isReady() ? "ready" : "UNAVAILABLE");
+    DebugSerial.print("  Fail-closed: ");
+    DebugSerial.println(_failClosed ? _failClosedReason : "no");
+    DebugSerial.print("  Management: ");
+    DebugSerial.println(_managementLocked ? _managementLockReason : "unlocked");
+#if JSON_CONFIG_ENABLED
+    String configReason;
+    const bool configValid = validateRuntimeConfigFile(PRODUCTION_BUILD, WEBSERVER_ENABLED, &configReason);
+    DebugSerial.print("  Config valid: "); DebugSerial.println(configValid ? "yes" : "no");
+    if (!configValid && configReason.length()) {
+        DebugSerial.print("  Config error: "); DebugSerial.println(configReason);
+    }
+#endif
     DebugSerial.print("  Uptime: ");   DebugSerial.print(millis() / 1000); DebugSerial.println("s");
     DebugSerial.print("  Free Heap: "); DebugSerial.println(ESP.getFreeHeap());
     DebugSerial.print("  Routes: ");   DebugSerial.println(_routingTable.getRouteCount());
     DebugSerial.print("  Links: ");    DebugSerial.println(_linkManager.getActiveLinkCount());
     DebugSerial.println("--- Interfaces ---");
     DebugSerial.println("  KISS USB: ON");
+    DebugSerial.print("  Mesh:     "); DebugSerial.println(_interfaceManager.isMeshEnabled() ? "ON" : "OFF");
     DebugSerial.print("  ESP-NOW:  "); DebugSerial.println(_interfaceManager.isEspNowInitialized() ? "ON" : "OFF");
     DebugSerial.print("  WiFi AP:  "); DebugSerial.println(WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "not connected");
     DebugSerial.print("  MAC:      "); DebugSerial.println(WiFi.macAddress());
     DebugSerial.println("===================");
 }
 
+void ReticulumNode::sendChatMessage(const String& message) {
+    if (_failClosed || !_identity.isReady()) {
+        DebugSerial.println("! chat: identity unavailable");
+        return;
+    }
+    String text = message;
+    text.trim();
+    if (text.length() == 0 || text.length() > 64) {
+        DebugSerial.println("! chat: message must be 1-64 characters");
+        return;
+    }
+    if (_pendingChat.active) {
+        DebugSerial.println("! chat: waiting for previous ACK");
+        return;
+    }
+
+    std::vector<uint8_t> payload;
+    payload.push_back('C');
+    payload.push_back('1');
+    payload.insert(payload.end(), _destinationHash, _destinationHash + 16);
+    payload.insert(payload.end(), text.begin(), text.end());
+
+    uint8_t dest[16] = {0};
+    RNSIdentity::destination_hash(_appName.c_str(), nullptr, dest);
+
+    size_t len = 0;
+    if (!ReticulumPacket::serialize(_pendingChat.packet, len, dest,
+                                    RNS_PACKET_DATA, RNS_DEST_PLAIN,
+                                    RNS_PROPAGATION_BROADCAST, RNS_CONTEXT_NONE,
+                                    0, payload)) {
+        DebugSerial.println("! chat: serialize failed");
+        return;
+    }
+    _pendingChat.packetLen = len;
+    uint8_t fullHash[32] = {0};
+    RNSIdentity::full_hash(payload.data() + 2, payload.size() - 2, fullHash);
+    memcpy(_pendingChat.hash, fullHash, 16);
+    _pendingChat.attempts = 1;
+    _pendingChat.nextTryMs = millis() + CHAT_RETRY_MS;
+    _pendingChat.active = true;
+    _interfaceManager.sendPacket(_pendingChat.packet, len, dest);
+    DebugSerial.print("[chat] sent: ");
+    DebugSerial.println(text);
+}
+
+void ReticulumNode::handleChatPayload(const std::vector<uint8_t>& payload, InterfaceType interface) {
+    if (payload.size() >= 18 && payload[0] == 'A' && payload[1] == '1') {
+        if (_pendingChat.active &&
+            memcmp(payload.data() + 2, _pendingChat.hash, 16) == 0) {
+            _pendingChat.active = false;
+            DebugSerial.println("[chat] delivered (ACK)");
+        }
+        return;
+    }
+    if (payload.size() < 19 || payload[0] != 'C' || payload[1] != '1') return;
+    if (memcmp(payload.data() + 2, _destinationHash, 16) == 0) return; // our own echo
+
+    DebugSerial.print("[chat] from ");
+    Utils::printBytes(payload.data() + 2, 8, DebugSerial);
+    DebugSerial.print(": ");
+    for (size_t i = 18; i < payload.size(); ++i) {
+        if (isprint(payload[i])) DebugSerial.print(static_cast<char>(payload[i]));
+    }
+    DebugSerial.println();
+
+    std::vector<uint8_t> ack;
+    ack.push_back('A');
+    ack.push_back('1');
+    uint8_t incomingHash[32] = {0};
+    RNSIdentity::full_hash(payload.data() + 2, payload.size() - 2, incomingHash);
+    ack.insert(ack.end(), incomingHash, incomingHash + 16);
+
+    uint8_t dest[16] = {0};
+    memcpy(dest, payload.data() + 2, 16);
+    uint8_t buf[MAX_PACKET_SIZE];
+    size_t len = 0;
+    if (ReticulumPacket::serialize(buf, len, dest, RNS_PACKET_DATA, RNS_DEST_PLAIN,
+                                   RNS_PROPAGATION_BROADCAST, RNS_CONTEXT_NONE, 0, ack)) {
+        _interfaceManager.sendPacket(buf, len, dest, interface);
+    }
+}
+
+void ReticulumNode::retryPendingChat() {
+    if (!_pendingChat.active) return;
+    const unsigned long now = millis();
+    if (static_cast<long>(now - _pendingChat.nextTryMs) < 0) return;
+    if (_pendingChat.attempts >= CHAT_MAX_ATTEMPTS) {
+        _pendingChat.active = false;
+        DebugSerial.println("! chat: no ACK, giving up");
+        return;
+    }
+    uint8_t dest[16] = {0};
+    RNSIdentity::destination_hash(_appName.c_str(), nullptr, dest);
+    _interfaceManager.sendPacket(_pendingChat.packet, _pendingChat.packetLen, dest);
+    _pendingChat.attempts++;
+    _pendingChat.nextTryMs = now + CHAT_RETRY_MS;
+    DebugSerial.print("[chat] retry ");
+    DebugSerial.println(_pendingChat.attempts);
+}
+
 void ReticulumNode::sendAnnounceIfNeeded() {
     unsigned long now = millis();
     // Check if announce interval has passed
     if (now - _last_announce_time > ANNOUNCE_INTERVAL_MS) {
-        if (!_identity.isReady()) {
-            DebugSerial.println("[Node] Identity not ready, skipping announce.");
+        if (_failClosed || !_identity.isReady() || ESP.getFreeHeap() < HEAP_CRITICAL_BYTES) {
+            DebugSerial.println("[Node] Skipping announce (fail-closed, identity, or heap).");
             _last_announce_time = now;
             return;
         }
@@ -486,14 +659,12 @@ void ReticulumNode::sendAnnounceIfNeeded() {
             announcePayload))                // payload: pub_key + name_hash + random_hash + sig
         {
             _interfaceManager.broadcastAnnounce(buffer, len); // Use InterfaceManager to send
-            // Pulse the LED briefly but restore the steady-on boot-complete state.
-            setStatusLed(false);
-            delay(20);
-            setStatusLed(true);
+            if (!_failClosed) setStatusLed(true);
         } else {
              DebugSerial.println("! ERROR: Failed to serialize own Announce packet!");
         }
-        _last_announce_time = now; // Reset timer *after* sending attempt
+        // Jitter the next interval so many nodes do not announce in lockstep.
+        _last_announce_time = now - random(0, 5000);
     }
 }
 
@@ -508,9 +679,14 @@ void ReticulumNode::handleReceivedPacket(const uint8_t *packetBuffer, size_t pac
     }
 
     const bool matchesIdentityDestination =
+        _identity.isReady() &&
         memcmp(packetInfo.destination_hash, _destinationHash, sizeof(_destinationHash)) == 0;
     const bool localControlInterface = interface == InterfaceType::SERIAL_PORT ||
                                        interface == InterfaceType::BLUETOOTH;
+
+    if (_failClosed && !localControlInterface) {
+        return;
+    }
 
     // LOCAL_CMD is a host-control envelope, not an on-air Reticulum context.
     // Consume it only from a local KISS interface and never route it.
@@ -533,9 +709,10 @@ void ReticulumNode::handleReceivedPacket(const uint8_t *packetBuffer, size_t pac
     // --- 1. Link Layer Packet Handling ---
     // LINKREQUEST packets: initiates a new link handshake
     if (packetInfo.packet_type == RNS_PACKET_LINKREQ) {
-        if (packetInfo.destination_type == RNS_DEST_SINGLE && matchesIdentityDestination) {
+        if (packetInfo.destination_type == RNS_DEST_SINGLE && matchesIdentityDestination &&
+            _identity.isReady() && !_failClosed) {
             _linkManager.handleLinkRequest(packetInfo, interface);
-        } else {
+        } else if (!_failClosed) {
             forwardPacket(packetInfo, interface);
         }
         return;
@@ -690,6 +867,8 @@ void ReticulumNode::processPacketForSelf(const RnsPacketInfo& packetInfo, Interf
     for(uint8_t byte : packetInfo.payload) { if(isprint(byte)) DebugSerial.print((char)byte); else DebugSerial.print('.'); }
     DebugSerial.println("]");
 
+    handleChatPayload(packetInfo.payload, interface);
+
     // respond to simple ping payloads automatically
     if (packetInfo.payload.size() == 4 &&
         packetInfo.payload[0] == 'p' && packetInfo.payload[1] == 'i' &&
@@ -828,8 +1007,8 @@ void ReticulumNode::setAppDataHandler(AppDataHandler handler) {
 
 // Called by LinkManager when reliable data arrives
 void ReticulumNode::processAppData(const uint8_t* source_address, const std::vector<uint8_t>& data) {
-    // This is where received Link data ends up
-    DebugSerial.print(">> App Data Received! Src: "); Utils::printBytes(source_address, RNS_ADDRESS_SIZE, DebugSerial);
+    // Link data is delivered with the 16-byte link_id as the source identifier.
+    DebugSerial.print(">> App Data Received! Link: "); Utils::printBytes(source_address, RNS_DESTINATION_HASH_SIZE, DebugSerial);
     DebugSerial.print(" Len: "); DebugSerial.print(data.size()); DebugSerial.println();
 
     if (_appDataHandler) {

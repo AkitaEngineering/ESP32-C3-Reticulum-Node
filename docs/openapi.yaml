@@ -48,6 +48,18 @@ paths:
                     type: boolean
                   config_error:
                     type: string
+                  identity_ready:
+                    type: boolean
+                  fail_closed:
+                    type: boolean
+                  fail_closed_reason:
+                    type: string
+                  mesh_enabled:
+                    type: boolean
+                  api_transport:
+                    type: string
+                  management_requires_tls_proxy:
+                    type: boolean
                   bootstrap_mode:
                     type: boolean
                   wifi_connected:
