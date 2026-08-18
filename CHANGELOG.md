@@ -1,7 +1,7 @@
 # ESP32 Reticulum Network Stack Gateway Node
 ## Revision History and Change Log
-**Document Version:** 2.2  
-**Date:** 2026-03-04  
+**Document Version:** 2.3  
+**Date:** 2026-08-18  
 **System Designation:** ESP32-RNS-GW-REV
 
 ---

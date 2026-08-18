@@ -1,7 +1,7 @@
 openapi: 3.0.3
 info:
   title: ESP32 Reticulum Gateway API
-  version: "1.0.0"
+  version: "1.1.0"
   description: OpenAPI spec for the small REST API implemented by the ESP32 Reticulum Gateway.
 servers:
   - url: http://{host}:{port}

@@ -1,7 +1,7 @@
 # Firmware Architecture
 
-**Document version:** 3.0
-**Updated:** 2026-07-19
+**Document version:** 3.1
+**Updated:** 2026-08-18
 
 ## Runtime composition
 

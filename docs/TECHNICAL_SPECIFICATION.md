@@ -1,6 +1,6 @@
 # ESP32 Reticulum Gateway Technical Specification
 
-**Document version:** 3.0
+**Document version:** 3.1
 **Updated:** 2026-08-18
 **Canonical target:** `esp32-c3-prod-managed`
 

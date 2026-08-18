@@ -1,6 +1,6 @@
 # Project Roadmap — ESP32 Reticulum Gateway
 
-Status (2026-02-20): roadmap updated; v2.1 features largely implemented.
+Status (2026-08-18): roadmap updated; v2.1 complete; signed OTA implemented; BLE still reserved.
 
 ## Goals
 - Make the node easier to operate remotely (HTTP API, runtime config, metrics)

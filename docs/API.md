@@ -1,5 +1,8 @@
 ## Web API (REST) - ESP32 Reticulum Gateway
 
+**Document version:** 3.1  
+**Updated:** 2026-08-18
+
 This document describes the HTTP API exposed by the device when `WEBSERVER_ENABLED=1`. The firmware does not serve a browser UI.
 
 All endpoints are served on HTTP (port defined by `WEBSERVER_PORT`) and use simple JSON where applicable.

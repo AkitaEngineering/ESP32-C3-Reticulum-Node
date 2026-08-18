@@ -1,6 +1,6 @@
 # Documentation Index
 
-**Updated:** 2026-07-19
+**Updated:** 2026-08-18
 
 Use these documents in this order:
 

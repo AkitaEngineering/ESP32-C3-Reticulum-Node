@@ -1,6 +1,6 @@
 # Reticulum Link Sessions
 
-**Document version:** 3.1
+**Document version:** 3.2
 **Updated:** 2026-08-18
 
 This document describes the link functionality that is actually implemented in `Link.cpp` and `LinkManager.cpp`. The implementation establishes authenticated, encrypted Reticulum link sessions. After the proof is verified, LRRTT, keepalive, close, and application data are Fernet-encrypted like reference RNS. It does not currently implement Reticulum resource transfer, packet delivery proofs, request/channel APIs, or automatic data retransmission.

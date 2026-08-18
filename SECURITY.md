@@ -1,5 +1,7 @@
 # Security Policy
 
+**Updated:** 2026-08-18
+
 If you discover a security issue, please follow responsible disclosure:
 - Do not open a public issue. Instead contact the maintainers privately (open a private GitHub security advisory).
 - Include steps to reproduce, affected versions, and suggested mitigations.
